@@ -5,7 +5,10 @@ RUN useradd -m -u 1000 appuser
 WORKDIR /app
 
 COPY requirements-mcp.txt .
-RUN pip install --no-cache-dir -r requirements-mcp.txt
+# pip is not needed at runtime; its vendored msgpack/urllib3/pkg_resources
+# are the image's only HIGH CVEs in Trivy
+RUN pip install --no-cache-dir -r requirements-mcp.txt \
+    && pip uninstall -y pip
 
 COPY src/main.py src/memory.py src/config.py src/queue_worker.py ./src/
 COPY src/scripts/dedup_job.py ./src/scripts/
