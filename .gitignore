@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Env / secrets
+.env
+*.local
+
+# Logs
+*.log
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Docker buildx state (generated)
+.build-state/

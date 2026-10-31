@@ -1,0 +1,8 @@
+---
+schemaVersion: "2.0.0"
+commandTests:
+  - name: "critical imports resolve"
+    command: "python"
+    args:
+      - "-c"
+      - "from mcp.server.fastmcp import FastMCP; import mem0; import psycopg2; import ollama"
