@@ -1,0 +1,22 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:recommended',
+  ],
+  packageRules: [
+    {
+      // mcp 2.0.0 dropped the bundled mcp.server.fastmcp submodule that
+      // src/main.py imports directly (`from mcp.server.fastmcp import FastMCP`),
+      // breaking the app at runtime. Hold mcp at 1.x until the import is
+      // migrated to the standalone fastmcp package.
+      description: 'Block mcp major updates (v2.0.0 removed the bundled fastmcp submodule)',
+      matchPackageNames: [
+        'mcp',
+      ],
+      matchUpdateTypes: [
+        'major',
+      ],
+      enabled: false,
+    },
+  ],
+}
