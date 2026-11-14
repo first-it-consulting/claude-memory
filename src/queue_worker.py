@@ -122,8 +122,10 @@ async def _run_worker():
         except asyncio.CancelledError:
             raise
         except Exception:
+            # Never log memory content — it may contain sensitive infra details.
+            job = job or {}
             logger.exception(
-                "Queue job %s failed (dropped): %.120r",
-                (job or {}).get("job_id", "?"), (job or {}).get("content", ""),
+                "Queue job %s failed (dropped): agent_id=%r content_len=%d",
+                job.get("job_id", "?"), job.get("agent_id", ""), len(job.get("content", "") or ""),
             )
             await asyncio.sleep(1)
