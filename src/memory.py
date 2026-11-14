@@ -276,8 +276,23 @@ def get_memory() -> Memory:
     if _mem is None:
         with _mem_lock:
             if _mem is None:
-                _mem = Memory(config=_build_config())
+                m = Memory(config=_build_config())
+                _apply_ollama_timeout(m)
+                _mem = m
     return _mem
+
+
+def _apply_ollama_timeout(m: Memory) -> None:
+    """mem0 builds its Ollama clients with no timeout, so a hung/overloaded
+    Ollama blocked the writer thread forever (and every delete/update queued
+    behind it). Swap in clients with a bounded timeout."""
+    try:
+        from ollama import Client
+        for component in (getattr(m, "llm", None), getattr(m, "embedding_model", None)):
+            if component is not None and isinstance(getattr(component, "client", None), Client):
+                component.client = Client(host=settings.ollama_base_url, timeout=settings.ollama_timeout)
+    except Exception as e:
+        logger.warning("could not set Ollama timeout (non-fatal): %s", e)
 
 
 def _agent_id(agent_id: str) -> str:
