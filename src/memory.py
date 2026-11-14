@@ -267,12 +267,16 @@ def _build_config() -> MemoryConfig:
 
 
 _mem: Optional[Memory] = None
+_mem_lock = threading.Lock()
 
 
 def get_memory() -> Memory:
+    # Called from worker threads now — guard against double initialisation.
     global _mem
     if _mem is None:
-        _mem = Memory(config=_build_config())
+        with _mem_lock:
+            if _mem is None:
+                _mem = Memory(config=_build_config())
     return _mem
 
 
