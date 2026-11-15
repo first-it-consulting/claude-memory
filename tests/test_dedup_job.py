@@ -170,3 +170,5 @@ def test_strip_preamble():
     assert d._strip_preamble("**Merged Memory:**\nx 1") == "x 1"
     assert d._strip_preamble("Here is the merged memory:\nx 1") == "x 1"
     assert d._strip_preamble("Memory usage on node4 is 10g") == "Memory usage on node4 is 10g"
+    assert d._strip_preamble("- a 1\n  - (no specific date or name mentioned in both memories)") == "- a 1"
+    assert d._strip_preamble("node4 (TrueNAS VM 114) OOM") == "node4 (TrueNAS VM 114) OOM"
