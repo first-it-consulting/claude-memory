@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import os
 import sys
 import time
@@ -346,7 +347,7 @@ def phase1_hash_dedup(conn, dry_run: bool) -> int:
             if not dry_run:
                 conn.commit()
 
-        finish_job_phase(conn, run_id, "completed", scanned=removed + 1 if removed else 0, changed=removed)
+        finish_job_phase(conn, run_id, "completed", scanned=len(clusters), changed=removed)
     except Exception as e:
         finish_job_phase(conn, run_id, "failed", error=str(e))
         log.error("Phase 1 failed: %s", e)
@@ -384,10 +385,13 @@ def find_semantic_clusters(
     parent: dict[str, str] = {}
 
     def find(x: str) -> str:
-        while parent.get(x, x) != x:
-            parent[x] = parent.get(parent.get(x, x), x)
-            x = parent[x]
-        return x
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:  # path compression
+            parent[x], x = root, parent[x]
+        return root
 
     def union(x: str, y: str) -> None:
         px, py = find(x), find(y)
@@ -437,55 +441,67 @@ def ollama_merge(texts: list[str]) -> Optional[str]:
         return None
 
 
-def store_memory_direct(content: str, category: str = "") -> Optional[str]:
-    args: dict = {"content": content, "infer": False}
-    if category:
-        args["category"] = category
-    payload = {
-        "jsonrpc": "2.0",
-        "method": "tools/call",
-        "params": {"name": "add_memory", "arguments": args},
-        "id": 1,
-    }
+_FACT_RE = re.compile(
+    r"[\w.~-]*/[\w./-]+"       # paths, URLs, repo names
+    r"|\b\w*\d[\w.:-]*"        # numbers, versions, times, ids
+)
+
+
+def fact_tokens(text: str) -> set[str]:
+    """Concrete details an LLM merge must not drop or alter: numbers, versions,
+    times, paths. llama3.2 has been seen rewriting '7.7.28->10.7.4 (outdated)'
+    into an 'upgrade', so a merge is accepted only if all of these survive."""
+    return {t.strip(".,;:()[]'\"-").lower() for t in _FACT_RE.findall(text or "")} - {""}
+
+
+def words(text: str) -> set[str]:
+    return set(re.findall(r"\w+", (text or "").lower()))
+
+
+def covering_text(texts: list[str]) -> Optional[int]:
+    """Index of a text that already contains every word of the others, if any:
+    the cluster can then be reduced to it verbatim, without an LLM rewrite."""
+    for i in sorted(range(len(texts)), key=lambda k: -len(texts[k])):
+        w = words(texts[i])
+        if all(words(t) <= w for j, t in enumerate(texts) if j != i):
+            return i
+    return None
+
+
+def merge_is_faithful(merged: str, texts: list[str]) -> bool:
+    missing = set().union(*(fact_tokens(t) for t in texts)) - fact_tokens(merged)
+    if missing:
+        log.info("  merge rejected, details lost: %s", sorted(missing)[:10])
+        return False
+    return True
+
+
+def store_memory_direct(content: str, agent_id: str = "", category: str = "",
+                        tags: Optional[list] = None) -> Optional[str]:
+    """Store the merged memory verbatim, in-process (the job runs in the server
+    image and gets the server's env). Returns the new id, or None — callers must
+    then keep the originals. (The old MCP-over-HTTP call could not parse the
+    stateless JSON response and add_memory is queued, so it never got an id.)"""
     try:
-        resp = requests.post(
-            f"{MEMORY_URL}/mcp",
-            headers={
-                "Authorization": f"Bearer {MEMORY_TOKEN}",
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
-            },
-            json=payload,
-            timeout=30,
-            stream=True,
-        )
-        resp.raise_for_status()
-        for line in resp.iter_lines():
-            decoded = line.decode() if isinstance(line, bytes) else line
-            if decoded.startswith("data:"):
-                obj = json.loads(decoded[5:].strip())
-                result = obj.get("result", {})
-                if result.get("isError"):
-                    log.warning("store error: %s", result)
-                    return None
-                text = (result.get("content") or [{}])[0].get("text", "")
-                try:
-                    data = json.loads(text)
-                    results = data.get("results", [])
-                    if results:
-                        return results[0].get("id")
-                except Exception:
-                    pass
-                return "stored"
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        if src not in sys.path:
+            sys.path.insert(0, src)
+        import memory as mstore  # server module
+
+        result = mstore.add(content, agent_id=agent_id, infer=False,
+                            category=category, tags=tags or [])
+        results = (result or {}).get("results") or []
+        return results[0].get("id") if results else None
     except Exception as e:
         log.warning("store_memory_direct failed: %s", e)
-    return None
+        return None
 
 
 def phase2_semantic_dedup(conn, threshold: float, dry_run: bool) -> int:
     log.info("Phase 2: semantic dedup (threshold=%.2f)", threshold)
     run_id = start_job_phase(conn, "semantic-dedup")
     merged = 0
+    clusters_seen = 0
 
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
@@ -508,32 +524,50 @@ def phase2_semantic_dedup(conn, threshold: float, dry_run: bool) -> int:
                     continue
 
                 cluster_category = categories[0] if categories else ""
-                texts = [r["payload"].get("data", "") for r in rows]
-                texts = [t for t in texts if t.strip()]
+                rows = [r for r in rows if (r["payload"].get("data") or "").strip()]
+                if len(rows) < MIN_CLUSTER_SIZE:
+                    continue
+                texts = [r["payload"]["data"] for r in rows]
+                metas = [_extract_meta(r["payload"]) for r in rows]
+                tags = sorted({t for m in metas for t in (m.get("tags") or []) if isinstance(t, str)})
+                agent = rows[0]["payload"].get("agent_id") or ""
+                clusters_seen += 1
 
-                if len(texts) < MIN_CLUSTER_SIZE:
+                keep = covering_text(texts)
+                if keep is not None:
+                    # One entry already says everything: keep it as is, drop the rest.
+                    drop = [r["id"] for i, r in enumerate(rows) if i != keep]
+                    log.info("Cluster of %d: keeping %s verbatim", len(rows), rows[keep]["id"])
+                    if not dry_run:
+                        archive_rows(cur, drop, "semantic-dedup", merged_into_id=rows[keep]["id"])
+                        delete_rows(cur, drop)
+                        conn.commit()
+                    merged += len(drop)
                     continue
 
                 log.info("Merging cluster of %d (category=%r)", len(texts), cluster_category)
-
                 if dry_run:
-                    merged += len(cluster_ids)
+                    merged += len(rows)
                     continue
 
                 merged_text = ollama_merge(texts)
-                if not merged_text:
-                    log.warning("Merge failed for cluster — skipping")
+                if not merged_text or not merge_is_faithful(merged_text, texts):
+                    log.warning("Merge failed or unfaithful — keeping originals")
                     continue
 
                 log.info("  → merged: %s", merged_text[:120])
-                new_id_str = store_memory_direct(merged_text, category=cluster_category)
-                merged_into = uuid.UUID(new_id_str) if new_id_str and new_id_str != "stored" else None
-                archive_rows(cur, cluster_ids, "semantic-dedup", merged_into_id=merged_into)
-                delete_rows(cur, cluster_ids)
+                new_id = store_memory_direct(merged_text, agent_id=agent,
+                                             category=cluster_category, tags=tags)
+                if not new_id:
+                    log.warning("Storing merged memory failed — keeping originals")
+                    continue
+                ids = [r["id"] for r in rows]
+                archive_rows(cur, ids, "semantic-dedup", merged_into_id=uuid.UUID(str(new_id)))
+                delete_rows(cur, ids)
                 conn.commit()
-                merged += len(cluster_ids)
+                merged += len(rows)
 
-        finish_job_phase(conn, run_id, "completed", scanned=merged, changed=merged)
+        finish_job_phase(conn, run_id, "completed", scanned=clusters_seen, changed=merged)
     except Exception as e:
         finish_job_phase(conn, run_id, "failed", error=str(e))
         log.error("Phase 2 failed: %s", e)
