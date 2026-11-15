@@ -138,13 +138,20 @@ def finish_job_phase(
     conn.commit()
 
 
+def _uuids(ids) -> list[uuid.UUID]:
+    """Row ids may come back as str; the id column is uuid (no uuid = text)."""
+    return [i if isinstance(i, uuid.UUID) else uuid.UUID(str(i)) for i in ids]
+
+
 def archive_rows(
     cur: psycopg2.extensions.cursor,
     row_ids: list[uuid.UUID],
     reason: str,
     merged_into_id: Optional[uuid.UUID] = None,
 ) -> None:
-    for rid in row_ids:
+    if merged_into_id is not None:
+        merged_into_id = _uuids([merged_into_id])[0]
+    for rid in _uuids(row_ids):
         cur.execute(
             f"""
             INSERT INTO {ARCHIVE_TABLE} (original_id, payload, archive_reason, merged_into_id)
@@ -159,7 +166,7 @@ def archive_rows(
 def delete_rows(cur: psycopg2.extensions.cursor, row_ids: list[uuid.UUID]) -> None:
     cur.execute(
         f"DELETE FROM {MEM_TABLE} WHERE id = ANY(%s)",
-        (row_ids,),
+        (_uuids(row_ids),),
     )
 
 
@@ -299,6 +306,7 @@ def phase0_llm_tagging(conn, dry_run: bool) -> int:
 
         finish_job_phase(conn, run_id, "completed", scanned, changed)
     except Exception as e:
+        conn.rollback()
         finish_job_phase(conn, run_id, "failed", scanned, changed, error=str(e))
         log.error("Phase 0 failed: %s", e)
 
@@ -349,6 +357,7 @@ def phase1_hash_dedup(conn, dry_run: bool) -> int:
 
         finish_job_phase(conn, run_id, "completed", scanned=len(clusters), changed=removed)
     except Exception as e:
+        conn.rollback()
         finish_job_phase(conn, run_id, "failed", error=str(e))
         log.error("Phase 1 failed: %s", e)
 
@@ -419,6 +428,14 @@ def find_semantic_clusters(
     return clusters
 
 
+def _strip_preamble(text: str) -> str:
+    """Drop a leading 'Memory:' / 'Merged memory:' / 'Here is ...:' line."""
+    lines = (text or "").strip().splitlines()
+    while lines and re.fullmatch(r"\s*(\*\*)?((merged|combined|final)\s+)?memory(\s+text)?:?(\*\*)?:?\s*|\s*here is.*:\s*", lines[0], re.I):
+        lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
 def ollama_merge(texts: list[str]) -> Optional[str]:
     numbered = "\n\n".join(f"Memory {i+1}:\n{t}" for i, t in enumerate(texts))
     prompt = (
@@ -435,7 +452,7 @@ def ollama_merge(texts: list[str]) -> Optional[str]:
             timeout=120,
         )
         resp.raise_for_status()
-        return resp.json().get("response", "").strip()
+        return _strip_preamble(resp.json().get("response", ""))
     except Exception as e:
         log.warning("Ollama merge failed: %s", e)
         return None
@@ -474,6 +491,14 @@ def merge_is_faithful(merged: str, texts: list[str]) -> bool:
         log.info("  merge rejected, details lost: %s", sorted(missing)[:10])
         return False
     return True
+
+
+def delete_memory_direct(memory_id: str) -> None:
+    try:
+        import memory as mstore  # imported by store_memory_direct before this runs
+        mstore.delete(memory_id)
+    except Exception as e:
+        log.warning("could not remove merged memory %s: %s", memory_id, e)
 
 
 def store_memory_direct(content: str, agent_id: str = "", category: str = "",
@@ -562,13 +587,19 @@ def phase2_semantic_dedup(conn, threshold: float, dry_run: bool) -> int:
                     log.warning("Storing merged memory failed — keeping originals")
                     continue
                 ids = [r["id"] for r in rows]
-                archive_rows(cur, ids, "semantic-dedup", merged_into_id=uuid.UUID(str(new_id)))
-                delete_rows(cur, ids)
-                conn.commit()
+                try:
+                    archive_rows(cur, ids, "semantic-dedup", merged_into_id=new_id)
+                    delete_rows(cur, ids)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    delete_memory_direct(new_id)  # originals stay; don't leave a duplicate
+                    raise
                 merged += len(rows)
 
         finish_job_phase(conn, run_id, "completed", scanned=clusters_seen, changed=merged)
     except Exception as e:
+        conn.rollback()
         finish_job_phase(conn, run_id, "failed", error=str(e))
         log.error("Phase 2 failed: %s", e)
 

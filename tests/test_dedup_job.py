@@ -67,6 +67,9 @@ class FakeConn:
     def commit(self):
         pass
 
+    def rollback(self):
+        self.rolled_back = True
+
 
 class FakeCur:
     def __init__(self, conn):
@@ -86,10 +89,14 @@ class FakeCur:
             self._res = self.c.pairs
         elif s.startswith("SELECT id, payload FROM"):
             ids = params[0]
-            self._res = [{"id": i, "payload": self.c.rows[i]} for i in ids if i in self.c.rows]
+            # psycopg2 returns the uuid column as str here (seen in production)
+            self._res = [{"id": str(i), "payload": self.c.rows[i]} for i in ids if i in self.c.rows]
         elif s.startswith("INSERT INTO mem0_archive"):
             self.c.archived.append(params[2])
         elif s.startswith("DELETE FROM"):
+            assert all(isinstance(i, uuid.UUID) for i in params[0]), "id = ANY(text[]) fails in postgres"
+            if getattr(self.c, "fail_delete", False):
+                raise RuntimeError("delete failed")
             self.c.deleted += list(params[0])
         else:
             self._res = []
@@ -112,7 +119,7 @@ def test_superset_kept_verbatim_without_llm(monkeypatch):
     a, b, conn = _two("Backups run daily at 03:00", "Backups run daily at 03:00 via restic")
     monkeypatch.setattr(d, "ollama_merge", lambda t: pytest.fail("LLM must not be called"))
     assert d.phase2_semantic_dedup(conn, .92, dry_run=False) == 1
-    assert conn.deleted == [a]
+    assert conn.deleted == [a]  # UUID, not str
 
 
 def test_unfaithful_merge_keeps_originals(monkeypatch):
@@ -145,3 +152,21 @@ def test_faithful_merge_replaces_originals(monkeypatch):
     assert d.phase2_semantic_dedup(conn, .92, dry_run=False) == 2
     assert sorted(map(str, conn.deleted)) == sorted(map(str, (a, b)))
     assert seen["agent_id"] == "codex" and seen["tags"] == ["x", "y"]
+
+
+def test_delete_failure_removes_stored_merge(monkeypatch):
+    a, b, conn = _two("oauth2-proxy 7.7.28 outdated", "metallb 0.14.9 outdated")
+    conn.fail_delete = True
+    removed = []
+    monkeypatch.setattr(d, "ollama_merge", lambda t: "Outdated: oauth2-proxy 7.7.28, metallb 0.14.9")
+    monkeypatch.setattr(d, "store_memory_direct", lambda *a, **k: str(uuid.uuid4()))
+    monkeypatch.setattr(d, "delete_memory_direct", removed.append)
+    assert d.phase2_semantic_dedup(conn, .92, dry_run=False) == 0
+    assert len(removed) == 1 and conn.rolled_back
+
+
+def test_strip_preamble():
+    assert d._strip_preamble("Memory:\n- a 1\n- b 2") == "- a 1\n- b 2"
+    assert d._strip_preamble("**Merged Memory:**\nx 1") == "x 1"
+    assert d._strip_preamble("Here is the merged memory:\nx 1") == "x 1"
+    assert d._strip_preamble("Memory usage on node4 is 10g") == "Memory usage on node4 is 10g"
