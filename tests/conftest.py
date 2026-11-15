@@ -160,4 +160,7 @@ def api(server):
         def post(self, path, json=None, headers=None, **kw):
             return requests.post(server + path, json=json, headers={**self.headers, **(headers or {})}, timeout=20, **kw)
 
+        def delete(self, path, auth=True):
+            return requests.delete(server + path, headers=self.headers if auth else {}, timeout=20)
+
     return Api()

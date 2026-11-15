@@ -484,6 +484,19 @@ def put_auto_notes(session_id: str, notes: str, project: str = "", harness: str 
     return _upsert_session(session_id, "auto_notes", notes, project, harness)
 
 
+def delete_checkpoint(session_id: str) -> bool:
+    """Delete a session row. Returns False if it did not exist."""
+    _ensure_session_table()
+    conn = _db_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM session_state WHERE session_id = %s", (session_id,))
+                return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def get_checkpoint(session_id: str) -> Optional[dict]:
     _ensure_session_table()
     conn = _db_conn()
@@ -496,7 +509,8 @@ def get_checkpoint(session_id: str) -> Optional[dict]:
         conn.close()
 
 
-def list_checkpoints(project: str = "", exclude_session: str = "", limit: int = 10) -> list[dict]:
+def list_checkpoints(project: str = "", exclude_session: str = "", limit: int = 10,
+                     harness: str = "") -> list[dict]:
     """Most recently updated sessions with a non-empty state, newest first."""
     _ensure_session_table()
     clauses = ["(state <> '' OR auto_notes <> '')"]
@@ -504,6 +518,9 @@ def list_checkpoints(project: str = "", exclude_session: str = "", limit: int = 
     if project:
         clauses.append("project = %s")
         params.append(project)
+    if harness:
+        clauses.append("harness = %s")
+        params.append(harness)
     if exclude_session:
         clauses.append("session_id <> %s")
         params.append(exclude_session)

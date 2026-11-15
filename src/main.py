@@ -627,11 +627,11 @@ async def app(scope, receive, send):
 
         # ---- Session checkpoints -----------------------------------------
 
-        # GET /api/sessions?project=&limit=
+        # GET /api/sessions?project=&harness=&limit=
         if path == "/api/sessions" and method == "GET":
             rows = await _to_thread(
                 mem_store.list_checkpoints, qs.get("project", "").strip(), "",
-                _int(qs.get("limit"), 20),
+                _int(qs.get("limit"), 20), qs.get("harness", "").strip(),
             )
             await _send_response(send, *_json_response(rows))
             return
@@ -674,6 +674,15 @@ async def app(scope, receive, send):
                     str(body_data.get("harness", "")).strip() or agent_id,
                 )
                 await _send_response(send, *_json_response({"ok": True, **row}))
+                return
+
+            # DELETE /api/sessions/{id}
+            if method == "DELETE":
+                deleted = await _to_thread(mem_store.delete_checkpoint, session_id)
+                if not deleted:
+                    await _send_response(send, 404, [[b"content-type", b"text/plain"]], b"Not Found")
+                    return
+                await _send_response(send, *_json_response({"ok": True, "session_id": session_id}))
                 return
 
         # GET /api/stats

@@ -81,3 +81,24 @@ def test_list_hides_sessions_without_content(api):
 def test_requires_auth(api):
     assert api.get("/api/sessions", auth=False).status_code == 401
     assert api.get("/api/sessions/s1", auth=False).status_code == 401
+
+
+def test_list_filters_by_harness(api):
+    api.put("/api/sessions/c1", {"state": "x", "project": "p1", "harness": "claude"})
+    api.put("/api/sessions/x1", {"state": "y", "project": "p1", "harness": "codex"})
+    assert [r["session_id"] for r in api.get("/api/sessions", harness="codex").json()] == ["x1"]
+    assert [r["session_id"] for r in api.get("/api/sessions", project="p1", harness="claude").json()] == ["c1"]
+
+
+def test_delete_session(api):
+    api.put("/api/sessions/d1", {"state": "to delete", "project": "p1"})
+    r = api.delete("/api/sessions/d1")
+    assert r.status_code == 200 and r.json() == {"ok": True, "session_id": "d1"}
+    assert api.get("/api/sessions/d1").status_code == 404
+    assert api.delete("/api/sessions/d1").status_code == 404
+
+
+def test_delete_requires_auth(api):
+    api.put("/api/sessions/d2", {"state": "keep"})
+    assert api.delete("/api/sessions/d2", auth=False).status_code == 401
+    assert api.get("/api/sessions/d2").status_code == 200
