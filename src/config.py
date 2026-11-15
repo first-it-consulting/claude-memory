@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     recall_min_score: float = 0.6        # cosine similarity (mem0 pgvector: 1 - distance)
     recall_limit: int = 3                # memories injected per prompt by /api/hooks/recall
     recall_min_prompt_chars: int = 12    # skip recall for "yes", "1", "go on" ...
+    hook_hit_max_chars: int = 400        # per-memory text cap in hook output (recall + briefing)
     hook_search_timeout: float = 8.0     # seconds; hooks must never stall the harness
     get_all_default_limit: int = 50      # MCP get_all_memories default page size
 

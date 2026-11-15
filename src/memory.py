@@ -451,6 +451,31 @@ def _upsert_session(session_id: str, column: str, value: str, project: str, harn
         conn.close()
 
 
+def register_session(session_id: str, project: str = "", harness: str = "") -> None:
+    """Create the session row or fill in missing project/harness, without
+    touching state, auto_notes or updated_at (an empty row is not listed as a
+    previous session, see list_checkpoints)."""
+    if not session_id or not (project or harness):
+        return
+    _ensure_session_table()
+    conn = _db_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO session_state (session_id, project, harness)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        project = COALESCE(NULLIF(EXCLUDED.project, ''), session_state.project),
+                        harness = COALESCE(NULLIF(EXCLUDED.harness, ''), session_state.harness)
+                    """,
+                    (session_id, project or "", harness or ""),
+                )
+    finally:
+        conn.close()
+
+
 def put_checkpoint(session_id: str, state: str, project: str = "", harness: str = "") -> dict:
     return _upsert_session(session_id, "state", state, project, harness)
 

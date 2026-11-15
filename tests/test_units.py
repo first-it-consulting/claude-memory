@@ -133,3 +133,56 @@ def test_emit_context_skips_empty(hook, capsys):
     assert capsys.readouterr().out == ""
     hook.emit_context("SessionStart", "hi")
     assert json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"] == "hi"
+
+
+# --- hook output condensing (recall / briefing) ----------------------------------
+
+IMPORTED_FILE = (
+    "[origin: some-project | file: k3s-node-upgrades.md] ---\n"
+    "name: k3s-node-upgrades\n"
+    "description: How k3s node OS updates are automated (kured + staggered upgrades)\n"
+    "metadata:\n  type: project\n---\n\n"
+    "Since 2026-11-11 unattended-upgrades run staggered per node. " + "x" * 2000
+)
+
+
+def test_condense_keeps_description_and_body_start(main_mod):
+    out = main_mod._condense(IMPORTED_FILE, 200)
+    assert out.startswith("How k3s node OS updates are automated (kured + staggered upgrades) — Since 2026-11-11")
+    assert "[origin:" not in out and "metadata:" not in out and "\n" not in out
+    assert len(out) <= 200 and out.endswith("…")
+
+
+def test_condense_short_plain_text_unchanged(main_mod):
+    assert main_mod._condense("Prod uses CNPG with daily backups", 400) == "Prod uses CNPG with daily backups"
+
+
+def test_format_memory_line_condenses_only_when_asked(main_mod):
+    r = {"memory": IMPORTED_FILE, "score": 0.7, "metadata": {}}
+    assert len(main_mod._format_memory_line(r, max_chars=300)) < 360
+    assert "x" * 2000 in main_mod._format_memory_line(r)  # MCP tools: full text
+
+
+# --- pre-compact transcript filtering ---------------------------------------------
+
+def test_transcript_skips_request_blobs_tool_results_and_summaries(hook, tmp_path):
+    rows = [
+        {"type": "user", "message": {"role": "user", "content": "Call the claude-memory checkpoint tool please"}},
+        {"type": "api-request-blob", "message": {"role": "user", "content": [
+            {"type": "text", "text": "Call the claude-memory checkpoint tool please"},
+            {"type": "text", "text": "Tool loaded."}]}},
+        {"type": "user", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "text", "text": "Tool loaded."}]}},
+        {"type": "user", "isCompactSummary": True, "message": {"role": "user", "content": "This session is being continued from a previous conversation..."}},
+        {"type": "user", "isMeta": True, "message": {"role": "user", "content": "caveat text"}},
+        {"type": "attachment", "attachment": {"role": "user", "content": "hook output"}},
+        {"type": "user", "message": {"role": "user", "content": "second request"}},
+        {"type": "user", "message": {"role": "user", "content": "Call the claude-memory checkpoint tool please"}},
+    ]
+    path = tmp_path / "t.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    notes = hook.extract_recent_turns(str(path))
+    users = [l for l in notes.splitlines() if l.startswith("- ")]
+    # mentions of claude-memory are real requests; repeats collapse to the latest position
+    assert users == ["- second request", "- Call the claude-memory checkpoint tool please"]
+    assert "Tool loaded." not in notes and "caveat" not in notes and "hook output" not in notes
+    assert "continued from a previous" not in notes

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import logging
 import time
 import urllib.parse
@@ -303,8 +304,32 @@ def _memory_dict(r: dict) -> dict:
     }
 
 
-def _format_memory_line(r: dict, with_id: bool = False, with_score: bool = True) -> str:
-    """One compact line per memory: [score] date · category · #tags · id=… — text"""
+_ORIGIN_RE = re.compile(r"^\[origin:[^\]]*\]\s*")
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.S)
+_DESC_RE = re.compile(r"^description:\s*(.+)$", re.M)
+
+
+def _condense(text: str, limit: int) -> str:
+    """Short form of a memory for hook injection. Imported memory files carry an
+    "[origin: …]" prefix and YAML frontmatter; keep the description and the
+    start of the body, on one line, capped at `limit` chars."""
+    text = _ORIGIN_RE.sub("", (text or "").strip())
+    m = _FRONTMATTER_RE.match(text)
+    if m:
+        desc = _DESC_RE.search(m.group(1))
+        body = text[m.end():].strip()
+        desc_text = desc.group(1).strip().strip("'\"") if desc else ""
+        text = f"{desc_text} — {body}" if desc_text and body else (desc_text or body)
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _format_memory_line(r: dict, with_id: bool = False, with_score: bool = True,
+                        max_chars: int = 0) -> str:
+    """One compact line per memory: [score] date · category · #tags · id=… — text
+    max_chars > 0 condenses the text (hooks); the MCP tools show it in full."""
     meta = _extract_meta(r)
     parts = []
     date = str(r.get("updated_at") or r.get("created_at") or "")[:10]
@@ -317,6 +342,8 @@ def _format_memory_line(r: dict, with_id: bool = False, with_score: bool = True)
     if with_id and r.get("id"):
         parts.append(f"id={r['id']}")
     text = r.get("memory", r.get("text", ""))
+    if max_chars > 0:
+        text = _condense(text, max_chars)
     prefix = ""
     score = r.get("score")
     if with_score and isinstance(score, (int, float)):
@@ -376,6 +403,15 @@ async def _build_briefing(session_id: str, project: str, source: str, harness: s
         lines.append("Context was just compacted. The checkpoint below is your authoritative "
                      "working state — trust it over the compaction summary where they differ.")
 
+    if session_id and (project or harness):
+        # Record project/harness now, so a later MCP `checkpoint` (which knows
+        # neither) still belongs to this project for the next session's
+        # "Last session on <project>" briefing. Never fatal.
+        try:
+            await _to_thread(mem_store.register_session, session_id, project, harness)
+        except Exception as e:
+            logger.warning("register_session failed: %s", type(e).__name__)
+
     current = await _to_thread(mem_store.get_checkpoint, session_id) if session_id else None
     query = ""
     if current and (current.get("state") or current.get("auto_notes")):
@@ -393,8 +429,8 @@ async def _build_briefing(session_id: str, project: str, source: str, harness: s
     hits = await _search_for_hook(query[:600] or project, limit=5, min_score=settings.recall_min_score)
     if hits:
         lines.append("")
-        lines.append("### Relevant long-term memories")
-        lines.extend(f"- {_format_memory_line(r)}" for r in hits)
+        lines.append("### Relevant long-term memories (shortened; full text: search_memory)")
+        lines.extend(f"- {_format_memory_line(r, max_chars=settings.hook_hit_max_chars)}" for r in hits)
 
     return _truncate("\n".join(lines), settings.briefing_max_chars)
 
@@ -406,8 +442,8 @@ async def _build_recall(prompt: str, limit: int, min_score: float) -> str:
     hits = await _search_for_hook(prompt, limit=limit, min_score=min_score)
     if not hits:
         return ""
-    return "### Possibly relevant memories (claude-memory)\n" + "\n".join(
-        f"- {_format_memory_line(r)}" for r in hits
+    return "### Possibly relevant memories (claude-memory, shortened; full text: search_memory)\n" + "\n".join(
+        f"- {_format_memory_line(r, max_chars=settings.hook_hit_max_chars)}" for r in hits
     )
 
 

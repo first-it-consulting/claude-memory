@@ -127,12 +127,48 @@ def _find_messages(obj, out: list) -> None:
             _find_messages(v, out)
 
 
+# Transcript lines that are not conversation turns. Claude Code also logs
+# request snapshots ("api-request-blob"), which repeat earlier messages plus
+# injected reminders and tool results; reading them produced duplicates and
+# entries like "Tool loaded.".
+_SKIP_LINE_TYPES = {"attachment", "system", "summary", "queue-operation", "last-prompt",
+                    "session-owner", "atis-latch", "tools-used", "cost-state", "mode",
+                    "event_msg", "turn_context", "session_meta"}
+
+
+def _is_turn_line(obj) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    t = obj.get("type")
+    if isinstance(t, str) and (t in _SKIP_LINE_TYPES or t.startswith("api-request")):
+        return False
+    # Claude Code flags: compaction summary, meta caveats, tool results, subagents.
+    if obj.get("isCompactSummary") or obj.get("isMeta") or obj.get("isSidechain") or "toolUseResult" in obj:
+        return False
+    return True
+
+
 def _is_noise(role: str, text: str) -> bool:
     # Harness-injected context (reminders, hook output, command wrappers) is
     # not something the user said.
     t = text.lstrip()
-    return role == "user" and (t.startswith("<") or t.startswith("[Request interrupted") or
-                               "claude-memory" in t[:200])
+    return role == "user" and (
+        t.startswith("<")
+        or t.startswith("[Request interrupted")
+        or t.startswith("This session is being continued from a previous conversation")
+        # our own injected output, when a harness logs it as a user message
+        # (exact headers only: a user mentioning claude-memory is a real request)
+        or t.startswith(("## Memory briefing (claude-memory)", "### Possibly relevant memories (claude-memory"))
+    )
+
+
+def _dedupe_keep_last(items: list) -> list:
+    seen, out = set(), []
+    for x in reversed(items):
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out[::-1]
 
 
 def extract_recent_turns(transcript_path: str) -> str:
@@ -150,10 +186,12 @@ def extract_recent_turns(transcript_path: str) -> str:
     messages: list = []
     for line in lines:
         try:
-            _find_messages(json.loads(line), messages)
+            obj = json.loads(line)
         except Exception:
             continue
-    users = [t for r, t in messages if r == "user" and not _is_noise(r, t)][-MAX_USER_TURNS:]
+        if _is_turn_line(obj):
+            _find_messages(obj, messages)
+    users = _dedupe_keep_last([t for r, t in messages if r == "user" and not _is_noise(r, t)])[-MAX_USER_TURNS:]
     assistants = [t for r, t in messages if r == "assistant"][-MAX_ASSISTANT_TURNS:]
     if not users and not assistants:
         return ""

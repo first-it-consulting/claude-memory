@@ -51,7 +51,8 @@ echo '{"session_id":"test","cwd":"'$PWD'","source":"startup"}' \
 - **They respond within a deadline.** Hooks time out after 6–10 s, and the server's semantic
   search in hooks gives up after `HOOK_SEARCH_TIMEOUT` (8 s), so a slow Ollama can't stall a prompt.
 - **They send nothing unless it was asked for.** Recall skips very short prompts like "yes"
-  or "1", and only injects hits with cosine similarity ≥ `RECALL_MIN_SCORE` (0.6, max 3).
+  or "1", and only injects hits with cosine similarity ≥ `RECALL_MIN_SCORE` (0.6, max 3),
+  each shortened to `HOOK_HIT_MAX_CHARS`.
   Tune both on the server.
 - **They read only the end of the transcript.** Pre-compaction capture reads the last 2 MB
   of the transcript and stores at most `AUTO_NOTES_MAX_CHARS`.
@@ -66,4 +67,5 @@ echo '{"session_id":"test","cwd":"'$PWD'","source":"startup"}' \
 | `RECALL_MIN_SCORE` | 0.6 | Minimum cosine similarity for injected memories |
 | `RECALL_LIMIT` | 3 | Memories injected per prompt |
 | `RECALL_MIN_PROMPT_CHARS` | 12 | Shorter prompts skip recall |
+| `HOOK_HIT_MAX_CHARS` | 400 | Each injected memory is shortened to this (description + start of body); the MCP tools still return full text |
 | `HOOK_SEARCH_TIMEOUT` | 8.0 | Seconds before hook search gives up |
