@@ -1,0 +1,63 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.15"]   # 3.15 = the Dockerfile's runtime
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mem0
+          POSTGRES_PASSWORD: mem0
+          POSTGRES_DB: mem0_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U mem0"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://mem0:mem0@localhost:5432/mem0_test
+      REQUIRE_DB: "1"   # fail instead of silently skipping DB tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+          cache: pip
+          cache-dependency-path: requirements-*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest
+
+  pi-extension:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Typecheck adapters/pi/agent-memory.ts against the pi extension API
+        run: |
+          mkdir -p /tmp/pi && cp adapters/pi/agent-memory.ts /tmp/pi/ && cd /tmp/pi
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund @earendil-works/pi-coding-agent typebox typescript @types/node
+          npx tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution nodenext \
+            --skipLibCheck agent-memory.ts

@@ -267,13 +267,32 @@ def _build_config() -> MemoryConfig:
 
 
 _mem: Optional[Memory] = None
+_mem_lock = threading.Lock()
 
 
 def get_memory() -> Memory:
+    # Called from worker threads now — guard against double initialisation.
     global _mem
     if _mem is None:
-        _mem = Memory(config=_build_config())
+        with _mem_lock:
+            if _mem is None:
+                m = Memory(config=_build_config())
+                _apply_ollama_timeout(m)
+                _mem = m
     return _mem
+
+
+def _apply_ollama_timeout(m: Memory) -> None:
+    """mem0 builds its Ollama clients with no timeout, so a hung/overloaded
+    Ollama blocked the writer thread forever (and every delete/update queued
+    behind it). Swap in clients with a bounded timeout."""
+    try:
+        from ollama import Client
+        for component in (getattr(m, "llm", None), getattr(m, "embedding_model", None)):
+            if component is not None and isinstance(getattr(component, "client", None), Client):
+                component.client = Client(host=settings.ollama_base_url, timeout=settings.ollama_timeout)
+    except Exception as e:
+        logger.warning("could not set Ollama timeout (non-fatal): %s", e)
 
 
 def _agent_id(agent_id: str) -> str:
@@ -359,5 +378,127 @@ def update_tags(memory_id: str, tags: list) -> bool:
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Session working memory (checkpoints)
+#
+# Deliberately NOT stored in mem0: a checkpoint must be readable the instant it
+# is written (no queue, no LLM extraction, no embedding) so it survives a
+# context compaction that happens seconds later. One row per session, upserted.
+# ---------------------------------------------------------------------------
+
+_session_schema_ok = False
+_session_schema_lock = threading.Lock()
+
+_SESSION_COLUMNS = "session_id, project, harness, state, auto_notes, created_at, updated_at"
+
+
+def _ensure_session_table() -> None:
+    """Create session_state lazily — the import-time schema step is non-fatal,
+    so the DB may not have been reachable when the process started."""
+    global _session_schema_ok
+    if _session_schema_ok:
+        return
+    with _session_schema_lock:
+        if _session_schema_ok:
+            return
+        conn = _db_conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS session_state (
+                            session_id  TEXT PRIMARY KEY,
+                            project     TEXT NOT NULL DEFAULT '',
+                            harness     TEXT NOT NULL DEFAULT '',
+                            state       TEXT NOT NULL DEFAULT '',
+                            auto_notes  TEXT NOT NULL DEFAULT '',
+                            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+                        )
+                    """)
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS session_state_project_idx "
+                        "ON session_state (project, updated_at DESC)"
+                    )
+            _session_schema_ok = True
+        finally:
+            conn.close()
+
+
+def _upsert_session(session_id: str, column: str, value: str, project: str, harness: str) -> dict:
+    assert column in ("state", "auto_notes")
+    _ensure_session_table()
+    conn = _db_conn()
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # Empty project/harness never overwrite known values.
+                cur.execute(
+                    f"""
+                    INSERT INTO session_state (session_id, project, harness, {column})
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        {column}   = EXCLUDED.{column},
+                        project    = COALESCE(NULLIF(EXCLUDED.project, ''), session_state.project),
+                        harness    = COALESCE(NULLIF(EXCLUDED.harness, ''), session_state.harness),
+                        updated_at = now()
+                    RETURNING {_SESSION_COLUMNS}
+                    """,
+                    (session_id, project or "", harness or "", value),
+                )
+                return dict(cur.fetchone())
+    finally:
+        conn.close()
+
+
+def put_checkpoint(session_id: str, state: str, project: str = "", harness: str = "") -> dict:
+    return _upsert_session(session_id, "state", state, project, harness)
+
+
+def put_auto_notes(session_id: str, notes: str, project: str = "", harness: str = "") -> dict:
+    return _upsert_session(session_id, "auto_notes", notes, project, harness)
+
+
+def get_checkpoint(session_id: str) -> Optional[dict]:
+    _ensure_session_table()
+    conn = _db_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(f"SELECT {_SESSION_COLUMNS} FROM session_state WHERE session_id = %s", (session_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_checkpoints(project: str = "", exclude_session: str = "", limit: int = 10) -> list[dict]:
+    """Most recently updated sessions with a non-empty state, newest first."""
+    _ensure_session_table()
+    clauses = ["(state <> '' OR auto_notes <> '')"]
+    params: list = []
+    if project:
+        clauses.append("project = %s")
+        params.append(project)
+    if exclude_session:
+        clauses.append("session_id <> %s")
+        params.append(exclude_session)
+    params.append(max(1, min(limit, 100)))
+    conn = _db_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"SELECT {_SESSION_COLUMNS} FROM session_state WHERE {' AND '.join(clauses)} "
+                f"ORDER BY updated_at DESC LIMIT %s",
+                params,
+            )
+            return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 # Run schema setup at import time (non-fatal if DB not yet ready)
 _ensure_schema()
+try:
+    _ensure_session_table()
+except Exception as e:
+    logger.warning("session_state schema setup deferred (non-fatal): %s", e)

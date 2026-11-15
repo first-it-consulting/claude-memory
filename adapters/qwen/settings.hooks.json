@@ -1,0 +1,34 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.config/agent-memory/memory_hook.py session-start --harness qwen"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.config/agent-memory/memory_hook.py prompt --harness qwen"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.config/agent-memory/memory_hook.py pre-compact --harness qwen"
+          }
+        ]
+      }
+    ]
+  }
+}
