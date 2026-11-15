@@ -1,0 +1,20 @@
+# Merge into ~/.codex/config.toml (or put the equivalent JSON in ~/.codex/hooks.json — not both).
+# New hooks must be reviewed and trusted once with /hooks before Codex runs them.
+
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "python3 ~/.config/agent-memory/memory_hook.py session-start --harness codex"
+timeout = 15
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "python3 ~/.config/agent-memory/memory_hook.py prompt --harness codex"
+timeout = 10
+
+[[hooks.PreCompact]]
+[[hooks.PreCompact.hooks]]
+type = "command"
+command = "python3 ~/.config/agent-memory/memory_hook.py pre-compact --harness codex"
+timeout = 15

@@ -21,8 +21,18 @@ _to_thread = asyncio.to_thread
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+_INSTRUCTIONS = (
+    "Long-term memory shared across sessions and agents. search_memory before "
+    "re-deriving facts about the user's infrastructure or projects; add_memory for "
+    "durable facts; update_memory to correct outdated ones. For long tasks keep your "
+    "working state with checkpoint(session_id, state) after each milestone — it is "
+    "re-injected after context compaction. If no briefing gave you a session_id, use "
+    "get_checkpoint(project=...) to resume and '<project>-<YYYYMMDD>' as session_id."
+)
+
 mcp = FastMCP(
     "claude-memory",
+    instructions=_INSTRUCTIONS,
     stateless_http=True,
     json_response=True,
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
@@ -52,26 +62,43 @@ async def add_memory(content: str, agent_id: str = "", infer: bool = True, categ
 
 @mcp.tool()
 async def search_memory(query: str, limit: int = 5) -> str:
-    """Search memory semantically. Returns top matching facts."""
+    """Search memory semantically. Returns top matching facts, one per line:
+    [score] date · category · #tags · id=<id> — text
+    Use the id with update_memory / delete_memory. Prefer newer facts when two conflict."""
     results = await _to_thread(mem_store.search, query, limit=limit)
     if not results:
         return "No memories found."
-    lines = []
-    for r in results:
-        score = r.get("score", "")
-        text = r.get("memory", r.get("text", str(r)))
-        lines.append(f"[{score:.3f}] {text}" if score else text)
-    return "\n".join(lines)
+    return "\n".join(_format_memory_line(r, with_id=True) for r in results)
 
 
 @mcp.tool()
-async def get_all_memories() -> str:
-    """List all stored memories."""
+async def get_all_memories(limit: int = 0, category: str = "") -> str:
+    """List stored memories, newest first. Paged to protect your context window:
+    default limit is 50 (max 500). Prefer search_memory for lookups."""
     results = await _to_thread(mem_store.get_all)
     if not results:
         return "No memories stored."
-    lines = [r.get("memory", r.get("text", str(r))) for r in results]
-    return "\n".join(f"{i+1}. {m}" for i, m in enumerate(lines))
+    if category:
+        results = [r for r in results if _extract_meta(r).get("category", "") == category]
+    results.sort(key=lambda r: r.get("created_at", "") or "", reverse=True)
+    limit = limit if limit > 0 else settings.get_all_default_limit
+    limit = min(limit, 500)
+    shown = results[:limit]
+    header = f"Showing {len(shown)} of {len(results)} memories (newest first)."
+    return header + "\n" + "\n".join(
+        f"{i+1}. {_format_memory_line(r, with_id=True, with_score=False)}" for i, r in enumerate(shown)
+    )
+
+
+@mcp.tool()
+async def update_memory(memory_id: str, content: str) -> str:
+    """Replace the text of an existing memory (ids come from search_memory).
+    Use this to correct an outdated fact instead of adding a contradicting one."""
+    content = (content or "").strip()
+    if not content:
+        return "content must not be empty."
+    result = await run_write(mem_store.update, memory_id, content)
+    return json.dumps(result, default=str)
 
 
 @mcp.tool()
@@ -79,6 +106,53 @@ async def delete_memory(memory_id: str) -> str:
     """Delete a memory by ID."""
     result = await run_write(mem_store.delete, memory_id)
     return json.dumps(result)
+
+
+@mcp.tool()
+async def checkpoint(session_id: str, state: str, project: str = "") -> str:
+    """Save your working state for this session. It is stored instantly and
+    re-injected after context compaction, so you can continue where you were.
+
+    Call it after each milestone, decision or failed attempt. Overwrites the
+    previous checkpoint — always send the full, current state, condensed:
+
+      ## Goal        what the user wants, in one or two lines
+      ## Done        completed steps (short)
+      ## Decisions   choice + why
+      ## Dead ends   what was tried and why it failed — so you don't retry it
+      ## Key files   paths / resources that matter
+      ## Next        the immediate next step(s)
+
+    session_id: the id from your memory briefing. Without a briefing, use
+    "<project>-<YYYYMMDD>". project: repo or topic name (optional)."""
+    session_id = (session_id or "").strip()
+    state = (state or "").strip()
+    if not session_id or not state:
+        return "session_id and state are required."
+    if len(state) > settings.checkpoint_max_chars:
+        return (f"Checkpoint too long ({len(state)} chars, max {settings.checkpoint_max_chars}). "
+                "Condense it — drop finished detail, keep goal, decisions, dead ends, next steps.")
+    row = await _to_thread(mem_store.put_checkpoint, session_id, state, project.strip(), "")
+    return json.dumps({"ok": True, "session_id": row["session_id"], "updated_at": str(row["updated_at"])})
+
+
+@mcp.tool()
+async def get_checkpoint(session_id: str = "", project: str = "") -> str:
+    """Read a saved session checkpoint. With session_id: that session's state.
+    With only project: the most recent session state for that project
+    (useful to pick up work started in another session or harness)."""
+    session_id = (session_id or "").strip()
+    project = (project or "").strip()
+    if session_id:
+        row = await _to_thread(mem_store.get_checkpoint, session_id)
+    elif project:
+        rows = await _to_thread(mem_store.list_checkpoints, project, "", 1)
+        row = rows[0] if rows else None
+    else:
+        return "Pass session_id or project."
+    if not row:
+        return "No checkpoint found."
+    return _format_checkpoint(row, "Checkpoint")
 
 
 # Build the FastMCP Starlette app and extract the ASGI handler directly
@@ -216,6 +290,128 @@ def _memory_dict(r: dict) -> dict:
     }
 
 
+def _format_memory_line(r: dict, with_id: bool = False, with_score: bool = True) -> str:
+    """One compact line per memory: [score] date · category · #tags · id=… — text"""
+    meta = _extract_meta(r)
+    parts = []
+    date = str(r.get("updated_at") or r.get("created_at") or "")[:10]
+    if date:
+        parts.append(date)
+    if meta.get("category"):
+        parts.append(meta["category"])
+    if meta.get("tags"):
+        parts.append("#" + ",".join(meta["tags"]))
+    if with_id and r.get("id"):
+        parts.append(f"id={r['id']}")
+    text = r.get("memory", r.get("text", ""))
+    prefix = ""
+    score = r.get("score")
+    if with_score and isinstance(score, (int, float)):
+        prefix = f"[{score:.2f}] "
+    return f"{prefix}{' · '.join(parts)} — {text}" if parts else f"{prefix}{text}"
+
+
+def _format_checkpoint(row: dict, title: str) -> str:
+    when = str(row.get("updated_at", ""))[:16]
+    who = " · ".join(x for x in (row.get("project"), row.get("harness")) if x)
+    out = [f"### {title} (session {row['session_id']}{' · ' + who if who else ''}, updated {when})"]
+    if row.get("state"):
+        out.append(row["state"].strip())
+    if row.get("auto_notes"):
+        out.append("#### Auto-captured before the last compaction (raw, may be partial)")
+        out.append(row["auto_notes"].strip())
+    return "\n".join(out)
+
+
+async def _search_for_hook(query: str, limit: int, min_score: float) -> list[dict]:
+    """Semantic search with a hard deadline: a slow Ollama must never stall a
+    harness hook. Returns [] on timeout or error."""
+    query = (query or "").strip()[:1000]
+    if not query:
+        return []
+    try:
+        results = await asyncio.wait_for(
+            _to_thread(mem_store.search, query, limit=max(limit * 3, 10)),
+            timeout=settings.hook_search_timeout,
+        )
+    except Exception as e:
+        logger.warning("hook search skipped: %s", type(e).__name__)
+        return []
+    hits = [r for r in results if isinstance(r.get("score"), (int, float)) and r["score"] >= min_score]
+    hits.sort(key=lambda r: r["score"], reverse=True)
+    return hits[:limit]
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 40].rstrip() + "\n… [truncated by claude-memory]"
+
+
+async def _build_briefing(session_id: str, project: str, source: str, harness: str, tool: str) -> str:
+    source = source or "startup"
+    tool = tool or "checkpoint"
+    lines = ["## Memory briefing (claude-memory)"]
+    if session_id:
+        lines.append(
+            f"Memory session_id: `{session_id}`. Keep your working state in memory: after each "
+            f"milestone, decision or failed attempt call `{tool}` (session_id=`{session_id}`) with the "
+            "full current state — Goal / Done / Decisions (+why) / Dead ends / Key files / Next. "
+            "It is re-injected after context compaction."
+        )
+    if source == "compact":
+        lines.append("Context was just compacted. The checkpoint below is your authoritative "
+                     "working state — trust it over the compaction summary where they differ.")
+
+    current = await _to_thread(mem_store.get_checkpoint, session_id) if session_id else None
+    query = ""
+    if current and (current.get("state") or current.get("auto_notes")):
+        lines.append("")
+        lines.append(_format_checkpoint(current, "Current session checkpoint"))
+        query = current.get("state") or current.get("auto_notes") or ""
+    elif project:
+        previous = await _to_thread(mem_store.list_checkpoints, project, session_id, 1)
+        if previous:
+            lines.append("")
+            lines.append(_format_checkpoint(previous[0], f"Last session on {project}"))
+            lines.append("(From an earlier session — only continue it if the user's request matches.)")
+            query = previous[0].get("state") or ""
+
+    hits = await _search_for_hook(query[:600] or project, limit=5, min_score=settings.recall_min_score)
+    if hits:
+        lines.append("")
+        lines.append("### Relevant long-term memories")
+        lines.extend(f"- {_format_memory_line(r)}" for r in hits)
+
+    return _truncate("\n".join(lines), settings.briefing_max_chars)
+
+
+async def _build_recall(prompt: str, limit: int, min_score: float) -> str:
+    prompt = (prompt or "").strip()
+    if len(prompt) < settings.recall_min_prompt_chars:
+        return ""
+    hits = await _search_for_hook(prompt, limit=limit, min_score=min_score)
+    if not hits:
+        return ""
+    return "### Possibly relevant memories (claude-memory)\n" + "\n".join(
+        f"- {_format_memory_line(r)}" for r in hits
+    )
+
+
+def _float(v, default: float) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _int(v, default: int) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
 _metrics_cache: dict = {"time": 0.0, "data": None}
 
 
@@ -326,6 +522,110 @@ async def app(scope, receive, send):
 
         agent_id = _get_agent_id(headers)
         qs = _parse_qs(scope.get("query_string", b"").decode())
+
+        # ---- Harness hook endpoints -------------------------------------
+        # Return {"context": "<text ready to inject>"}; adapters wrap it in
+        # their harness's output format. All logic lives here so every
+        # harness behaves the same.
+
+        # GET /api/hooks/briefing?session_id=&project=&source=startup|resume|compact&harness=&tool=
+        if path == "/api/hooks/briefing" and method == "GET":
+            try:
+                context = await _build_briefing(
+                    qs.get("session_id", "").strip(),
+                    qs.get("project", "").strip(),
+                    qs.get("source", "startup").strip(),
+                    qs.get("harness", "").strip() or agent_id,
+                    qs.get("tool", "").strip(),
+                )
+            except Exception:
+                logger.exception("briefing failed")
+                await _send_response(send, *_json_response({"context": ""}, status=503))
+                return
+            await _send_response(send, *_json_response({"context": context}))
+            return
+
+        # GET /api/hooks/recall?q=&limit=&min_score=
+        if path == "/api/hooks/recall" and method == "GET":
+            context = await _build_recall(
+                qs.get("q", ""),
+                max(1, min(_int(qs.get("limit"), settings.recall_limit), 10)),
+                _float(qs.get("min_score"), settings.recall_min_score),
+            )
+            await _send_response(send, *_json_response({"context": context}))
+            return
+
+        # POST /api/hooks/precompact {session_id, project, harness, notes}
+        if path == "/api/hooks/precompact" and method == "POST":
+            try:
+                body_data = json.loads(await _read_body(receive))
+                session_id = str(body_data.get("session_id", "")).strip()
+                notes = str(body_data.get("notes", "")).strip()
+            except Exception:
+                await _send_response(send, 400, [[b"content-type", b"text/plain"]], b"Bad Request")
+                return
+            if not session_id or not notes:
+                await _send_response(send, *_json_response({"ok": False, "error": "session_id and notes required"}, status=400))
+                return
+            notes = _truncate(notes, settings.auto_notes_max_chars)
+            await _to_thread(
+                mem_store.put_auto_notes, session_id, notes,
+                str(body_data.get("project", "")).strip(),
+                str(body_data.get("harness", "")).strip() or agent_id,
+            )
+            await _send_response(send, *_json_response({"ok": True}))
+            return
+
+        # ---- Session checkpoints -----------------------------------------
+
+        # GET /api/sessions?project=&limit=
+        if path == "/api/sessions" and method == "GET":
+            rows = await _to_thread(
+                mem_store.list_checkpoints, qs.get("project", "").strip(), "",
+                _int(qs.get("limit"), 20),
+            )
+            await _send_response(send, *_json_response(rows))
+            return
+
+        if path.startswith("/api/sessions/"):
+            session_id = urllib.parse.unquote(path[len("/api/sessions/"):]).strip()
+            if not session_id:
+                await _send_response(send, 404, [[b"content-type", b"text/plain"]], b"Not Found")
+                return
+
+            # GET /api/sessions/{id}
+            if method == "GET":
+                row = await _to_thread(mem_store.get_checkpoint, session_id)
+                if row is None:
+                    await _send_response(send, 404, [[b"content-type", b"text/plain"]], b"Not Found")
+                    return
+                await _send_response(send, *_json_response(row))
+                return
+
+            # PUT /api/sessions/{id} {state, project?, harness?}
+            if method == "PUT":
+                try:
+                    body_data = json.loads(await _read_body(receive))
+                    state = str(body_data.get("state", "")).strip()
+                except Exception:
+                    await _send_response(send, 400, [[b"content-type", b"text/plain"]], b"Bad Request")
+                    return
+                if not state:
+                    await _send_response(send, *_json_response({"ok": False, "error": "state required"}, status=400))
+                    return
+                if len(state) > settings.checkpoint_max_chars:
+                    await _send_response(send, *_json_response({
+                        "ok": False,
+                        "error": f"state too long ({len(state)} chars, max {settings.checkpoint_max_chars}); condense it",
+                    }, status=413))
+                    return
+                row = await _to_thread(
+                    mem_store.put_checkpoint, session_id, state,
+                    str(body_data.get("project", "")).strip(),
+                    str(body_data.get("harness", "")).strip() or agent_id,
+                )
+                await _send_response(send, *_json_response({"ok": True, **row}))
+                return
 
         # GET /api/stats
         if path == "/api/stats" and method == "GET":

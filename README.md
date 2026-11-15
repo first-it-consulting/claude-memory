@@ -8,7 +8,9 @@ Built on [mem0](https://github.com/mem0ai/mem0) with **pgvector** storage, optio
 
 ## Features
 
-- **MCP tools** — `add_memory`, `search_memory`, `get_all_memories`, `delete_memory` for use directly from Claude Code / Cursor.
+- **MCP tools**: `add_memory`, `search_memory`, `get_all_memories`, `update_memory`, `delete_memory`, `checkpoint`, `get_checkpoint`. Works with any MCP client (Claude Code, Qwen, Codex, Cursor, …).
+- **Session working memory**: `checkpoint` stores an agent's current working state (goal, decisions, dead ends, next steps) instantly, without the queue or LLM, so it survives context compaction. It's re-injected by the harness hooks.
+- **Harness hooks**: `/api/hooks/*` endpoints plus thin adapters for Claude Code, Qwen Code, Codex and Pi (see [`adapters/`](adapters/README.md)). They give each session a briefing at start, re-inject the checkpoint after compaction, and recall relevant memories per prompt.
 - **Semantic memory** — stores, embeds (via Ollama), searches and deduplicates memories using mem0 + pgvector.
 - **Categorization & tagging** — classify memories (`project`, `feedback`, `reference`, `user`, `session`, `incident`) and tag them with free-form labels for filtering and metrics.
 - **REST API** — full CRUD over `/api/*` with bearer-token auth, plus JSON export/import.
@@ -48,6 +50,8 @@ Claude Code / MCP client            Browser UI (claude-memory-ui)
    └───────────────────────────────────────────────┘
 ```
 
+Session checkpoints live in a plain `session_state` table (one row per session, upserted). They're not stored in mem0, because they have to be readable the moment they're written.
+
 **Data flow:** an `add_memory` call either writes synchronously through mem0 or, when Redis is configured, enqueues a job that the background worker (`queue_worker.py`) processes. mem0 persists embeddings in pgvector and embeds via Ollama; search ranks by embedding similarity.
 
 ---
@@ -77,7 +81,7 @@ The `X-Agent-ID` request header overrides the agent id for a given call.
 ## API reference
 
 ### MCP (`POST /mcp`)
-Standard Model Context Protocol (stateless HTTP, SSE or JSON transport). Tools: `add_memory`, `search_memory`, `get_all_memories`, `delete_memory`.
+Standard Model Context Protocol (stateless HTTP, SSE or JSON transport). Tools: `add_memory`, `search_memory` (returns `[score] date · category · #tags · id=… — text`), `get_all_memories` (paged, default 50), `update_memory`, `delete_memory`, `checkpoint`, `get_checkpoint`. Server `instructions` explain the checkpoint workflow to clients without hooks.
 
 ### REST (`/api/*` — requires bearer auth)
 | Method | Path | Description |
@@ -94,6 +98,11 @@ Standard Model Context Protocol (stateless HTTP, SSE or JSON transport). Tools: 
 | POST | `/api/tag-rules` | Add a rule (`{"tag": "...", "keyword": "..."}`) |
 | DELETE | `/api/tag-rules/{tag}/{keyword}` | Remove a rule |
 | GET | `/api/jobs` / `/api/jobs/{id}` | List dedup job runs / fetch one run (Redis queue mode) |
+| GET | `/api/sessions` | List session checkpoints (`?project=&limit=`), newest first |
+| GET / PUT | `/api/sessions/{id}` | Read / upsert a session checkpoint (`{"state": "...", "project": "..."}`) |
+| GET | `/api/hooks/briefing` | Text to inject at session start / after compaction (`?session_id=&project=&source=startup\|resume\|compact&tool=`) |
+| GET | `/api/hooks/recall` | Relevant memories for a prompt above the score threshold (`?q=&limit=&min_score=`) |
+| POST | `/api/hooks/precompact` | Store auto-captured recent turns before compaction (`{session_id, project, notes}`) |
 
 ### Unauthenticated
 | Method | Path | Description |
@@ -153,6 +162,10 @@ python src/main.py        # serves on 0.0.0.0:8080
     ├── queue_worker.py        # Redis async enqueue + background worker (optional)
     └── scripts/
         └── dedup_job.py       # Ollama-powered memory de-duplication job
+adapters/                      # harness hook adapters (see adapters/README.md)
+├── hooks/memory_hook.py       # shared hook script: Claude Code, Qwen Code, Codex
+├── claude-code/ qwen/ codex/  # config snippets per harness
+└── pi/agent-memory.ts         # Pi extension
 ```
 
 ---

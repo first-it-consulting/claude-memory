@@ -19,5 +19,15 @@ class Settings(BaseSettings):
     write_queue_max: int = 1000  # in-process queue bound; add_memory rejects when full
     metrics_cache_seconds: float = 60.0  # /metrics + /api/stats full-scan cache
 
+    # Session working memory (checkpoints) + hook endpoints
+    checkpoint_max_chars: int = 6000     # reject larger checkpoints so the model condenses
+    auto_notes_max_chars: int = 3000     # pre-compaction auto-capture is truncated to this
+    briefing_max_chars: int = 9000       # cap for /api/hooks/briefing output (~2.2k tokens)
+    recall_min_score: float = 0.6        # cosine similarity (mem0 pgvector: 1 - distance)
+    recall_limit: int = 3                # memories injected per prompt by /api/hooks/recall
+    recall_min_prompt_chars: int = 12    # skip recall for "yes", "1", "go on" ...
+    hook_search_timeout: float = 8.0     # seconds; hooks must never stall the harness
+    get_all_default_limit: int = 50      # MCP get_all_memories default page size
+
 
 settings = Settings()
