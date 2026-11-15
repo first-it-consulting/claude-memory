@@ -148,3 +148,25 @@ def test_precompact_requires_session_and_notes(api, payload):
 def test_hooks_require_auth(api):
     assert api.get("/api/hooks/briefing", auth=False).status_code == 401
     assert api.get("/api/hooks/recall", auth=False, q="x").status_code == 401
+
+
+def test_recall_hits_are_condensed(api, fake_mem, settings_override):
+    settings_override(hook_hit_max_chars=120)
+    fake_mem.corpus.append({"id": "long1", "memory": "cnpg backups prod-k8s " + "detail " * 400,
+                            "metadata": {"category": "project"}, "agent_id": "t",
+                            "created_at": "2026-11-01", "updated_at": "2026-11-01"})
+    ctx = api.get("/api/hooks/recall", q="how do cnpg backups work on prod-k8s?").json()["context"]
+    assert "full text: search_memory" in ctx
+    assert all(len(l) < 220 for l in ctx.splitlines())
+
+
+def test_briefing_registers_project_for_later_mcp_checkpoint(api):
+    # session starts (hook knows project+harness), then the model checkpoints via MCP (knows neither)
+    briefing(api, session_id="reg1", project="pX", source="startup", harness="claude")
+    row = api.get("/api/sessions/reg1").json()
+    assert row["project"] == "pX" and row["harness"] == "claude" and row["state"] == ""
+    # an empty registered row is not offered as "last session"
+    assert "Last session on pX" not in briefing(api, session_id="other", project="pX")
+    api.put("/api/sessions/reg1", {"state": "## Goal\nregistered goal"})  # no project, like MCP
+    ctx = briefing(api, session_id="next", project="pX", source="startup")
+    assert "Last session on pX" in ctx and "registered goal" in ctx
