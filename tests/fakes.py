@@ -46,6 +46,7 @@ class FakeMemory:
         self.corpus = copy.deepcopy(CORPUS)
         self.mode = "normal"        # normal | raise | slow
         self.slow_seconds = 3.0
+        self.infer_results: list[dict] = []
         self.calls: list[tuple] = []
 
     # --- mem0 API ---------------------------------------------------------
@@ -77,5 +78,9 @@ class FakeMemory:
         return {"message": "Memory deleted successfully!"}
 
     def add(self, content, **kwargs):
+        """infer=True returns self.infer_results (default: nothing extracted,
+        like mem0 when the LLM finds no facts); infer=False stores as-is."""
         self.calls.append(("add", content, kwargs))
-        return {"results": []}
+        if kwargs.get("infer", True):
+            return {"results": list(self.infer_results)}
+        return {"results": [{"id": f"raw-{len(self.calls)}", "memory": content, "event": "ADD"}]}

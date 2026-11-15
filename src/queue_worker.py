@@ -35,6 +35,19 @@ class QueueFull(Exception):
     pass
 
 
+def _summarize(result) -> str:
+    """Event counts only, never memory content (it may contain infra details)."""
+    results = (result or {}).get("results") or []
+    counts: dict = {}
+    for r in results:
+        ev = r.get("event", "?") if isinstance(r, dict) else "?"
+        counts[ev] = counts.get(ev, 0) + 1
+    text = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing stored"
+    if (result or {}).get("fallback"):
+        text += f" (fallback: {result['fallback']}, no facts extracted)"
+    return text
+
+
 async def run_write(fn, *args, **kwargs):
     """Run a blocking mem0 write on the single writer thread."""
     loop = asyncio.get_running_loop()
@@ -110,7 +123,7 @@ async def _run_worker():
             job = await _next_job()
             if job is None:
                 continue
-            await run_write(
+            result = await run_write(
                 mem_store.add,
                 job["content"],
                 agent_id=job.get("agent_id", ""),
@@ -118,7 +131,7 @@ async def _run_worker():
                 category=job.get("category", ""),
                 tags=job.get("tags", []),
             )
-            logger.info("Processed queue job %s", job.get("job_id", "?"))
+            logger.info("Processed queue job %s: %s", job.get("job_id", "?"), _summarize(result))
         except asyncio.CancelledError:
             raise
         except Exception:

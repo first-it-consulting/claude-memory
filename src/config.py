@@ -30,5 +30,23 @@ class Settings(BaseSettings):
     hook_search_timeout: float = 8.0     # seconds; hooks must never stall the harness
     get_all_default_limit: int = 50      # MCP get_all_memories default page size
 
+    # add_memory extraction. mem0's built-in prompt looks for personal facts
+    # about "the user"; technical notes ("Backups run at 3:00") came back with
+    # no facts and were dropped silently. These instructions are appended to
+    # mem0's extraction prompt; set MEM0_CUSTOM_INSTRUCTIONS="" to disable.
+    mem0_custom_instructions: str = (
+        "This memory store serves AI coding agents working on a homelab and its software projects. "
+        "Every input is a note an agent was explicitly asked to keep, so it always contains something memorable. "
+        "Extract every concrete fact: infrastructure, hosts, clusters, services, configuration, versions, "
+        "schedules and times, decisions with their reasons, failed approaches (dead ends), incidents and fixes, "
+        "conventions and preferences. Keep names, paths, numbers and versions exactly as written. "
+        "Write each memory as a self-contained statement about the subject itself "
+        "(e.g. 'Backups run daily at 03:00'), not as 'User has ...' unless it is about the user personally. "
+        "Never return an empty list: if nothing else fits, return the note itself, condensed, as one memory."
+    )
+    # If extraction still yields nothing, store the note as written (infer=False)
+    # instead of dropping it. Duplicates are merged by the nightly dedup job.
+    add_raw_fallback: bool = True
+
 
 settings = Settings()
