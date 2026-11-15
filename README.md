@@ -16,7 +16,8 @@ Built on [mem0](https://github.com/mem0ai/mem0) with **pgvector** storage, optio
 - **REST API** — full CRUD over `/api/*` with bearer-token auth, plus JSON export/import.
 - **Async queue (optional)** — set `REDIS_URL` to route writes through a Redis job queue (`remnant:queue:add_memory`) with a background worker, so heavy inference never blocks the request.
 - **Prometheus metrics** — `/metrics` exposes memory counts by category, agent and tag, plus queue depth.
-- **LLM deduplication** — a standalone `dedup_job.py` uses Ollama to merge and de-duplicate stored memories.
+- **Nightly maintenance** — `dedup_job.py` (CronJob) removes exact and near-duplicate memories (verbatim where possible; LLM merges only if every number, version and path survives; originals archived to `mem0_archive`).
+- **Checkpoint promotion** — the same job copies the `## Decisions` and `## Dead ends` bullets of finished sessions into long-term memory, verbatim, tagged `auto-promoted`, so what one session learned reaches every agent. See [Checkpoint promotion](#checkpoint-promotion).
 - **Multi-platform images** — `linux/amd64` and `linux/arm64`, published via Docker Buildx Bake.
 
 ---
@@ -77,6 +78,29 @@ All settings come from environment variables (`.env` file is auto-loaded). See `
 | `REDIS_URL` | *(empty)* | Set to enable the async write queue (requires a reachable Redis). |
 
 The `X-Agent-ID` request header overrides the agent id for a given call.
+
+### Checkpoint promotion
+
+The nightly `dedup_job.py` first promotes finished sessions: every session whose checkpoint has
+not changed for `PROMOTE_IDLE_HOURS` and was not promoted yet (or changed since). From its
+checkpoint it takes the bullets under `Decisions` / `Dead ends` headings (`## Decisions`,
+`**Dead ends:**`, …) and stores each one **verbatim** — no LLM — as
+`Decision (<project>): <bullet>` / `Dead end (<project>): <bullet>`, category `project`,
+tags `auto-promoted`, `decision` | `dead-end`, project and harness, with
+`source: checkpoint` and the `session_id` in its metadata.
+
+It skips bullets that are too short (< 40 characters or 6 words), only matter inside their
+session ("for now", "temporarily", "none"), repeat a line from another session, or are already
+known (similarity ≥ `PROMOTE_DUP_THRESHOLD` to an existing memory). The hooks rank
+auto-promoted memories `PROMOTED_RECALL_PENALTY` below deliberately stored ones. Each run
+writes a line-by-line report to the job run (`details`, shown in the UI's Jobs tab).
+
+| Variable (CronJob) | Default | Description |
+|---|---|---|
+| `PROMOTE_MODE` | `dry-run` | `off`, `dry-run` (report only: what *would* be promoted) or `on`. |
+| `PROMOTE_IDLE_HOURS` | `12` | A session counts as finished after this many hours without a checkpoint update. |
+| `PROMOTE_DUP_THRESHOLD` | `0.92` | Skip a bullet if an existing memory is at least this similar. |
+| `PROMOTED_RECALL_PENALTY` (server) | `0.05` | Subtracted from an auto-promoted memory's similarity in hook recall. |
 
 ---
 
@@ -186,7 +210,8 @@ the Pi extension.
     ├── memory.py              # mem0 client, pgvector storage, categories, tag rules
     ├── queue_worker.py        # Redis async enqueue + background worker (optional)
     └── scripts/
-        └── dedup_job.py       # Ollama-powered memory de-duplication job
+        ├── dedup_job.py       # nightly job: checkpoint promotion + de-duplication
+        └── promotion.py       # parses Decisions / Dead ends out of checkpoints
 adapters/                      # harness hook adapters (see adapters/README.md)
 ├── hooks/memory_hook.py       # shared hook script: Claude Code, Qwen Code, Codex
 ├── claude-code/ qwen/ codex/  # config snippets per harness

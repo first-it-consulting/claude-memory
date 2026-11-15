@@ -127,6 +127,10 @@ async def checkpoint(session_id: str, state: str, project: str = "") -> str:
       ## Key files   paths / resources that matter
       ## Next        the immediate next step(s)
 
+    Write each Decision and Dead end as one self-contained bullet with what and
+    why ("Removed kubeval from CI: its schema host has SSL errors"). After the
+    session ends they are copied into long-term memory for all agents.
+
     session_id: the id from your memory briefing. Without a briefing, use
     "<project>-<YYYYMMDD>". project: repo or topic name (optional)."""
     session_id = (session_id or "").strip()
@@ -380,9 +384,24 @@ async def _search_for_hook(query: str, limit: int, min_score: float) -> list[dic
     except Exception as e:
         logger.warning("hook search skipped: %s", type(e).__name__)
         return []
-    hits = [r for r in results if isinstance(r.get("score"), (int, float)) and r["score"] >= min_score]
+    hits = []
+    for r in results:
+        score = _rank_score(r)
+        if score is not None and score >= min_score:
+            hits.append({**r, "score": score})
     hits.sort(key=lambda r: r["score"], reverse=True)
     return hits[:limit]
+
+
+def _rank_score(r: dict):
+    """Similarity used by the hooks. Lines promoted automatically from session
+    checkpoints rank slightly below memories someone chose to store."""
+    score = r.get("score")
+    if not isinstance(score, (int, float)):
+        return None
+    if "auto-promoted" in (_extract_meta(r).get("tags") or []):
+        score -= settings.promoted_recall_penalty
+    return score
 
 
 def _truncate(text: str, limit: int) -> str:

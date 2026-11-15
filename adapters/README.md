@@ -75,7 +75,10 @@ After each milestone, decision or failed attempt, save a memory checkpoint (clau
 tool `checkpoint`, session_id from the memory briefing) with the full current state:
 Goal / Done / Decisions + why / Dead ends / Next. Always checkpoint before a long or risky
 step (large build, deploy, refactor). The checkpoint is re-injected after context
-compaction, so keep it current and condensed.
+compaction, so keep it current and condensed. Write each Decision and Dead end as one
+self-contained bullet with what and why (e.g. "Removed kubeval from CI: its schema host has
+SSL errors"), under `## Decisions` and `## Dead ends` headings: after the session ends they
+are copied into long-term memory for all agents.
 ```
 
 Put it in the global file, not in each project's `CLAUDE.md` / `AGENTS.md`: it applies to

@@ -101,6 +101,7 @@ def _ensure_schema() -> None:
                             error            TEXT
                         )
                     """)
+                    cur.execute("ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS details TEXT")
                     cur.execute("SELECT COUNT(*) FROM tag_rules")
                     if cur.fetchone()[0] == 0:
                         for tag, keywords in _TAG_RULES_SEED.items():
@@ -303,9 +304,10 @@ def _agent_id(agent_id: str) -> str:
 VALID_CATEGORIES = {"project", "feedback", "reference", "user", "session", "incident", ""}
 
 
-def add(content: str, agent_id: str = "", infer: Optional[bool] = None, category: str = "", tags: Optional[list] = None) -> dict:
+def add(content: str, agent_id: str = "", infer: Optional[bool] = None, category: str = "",
+        tags: Optional[list] = None, extra_metadata: Optional[dict] = None) -> dict:
     m = get_memory()
-    metadata: dict = {}
+    metadata: dict = dict(extra_metadata or {})
     if category:
         metadata["category"] = category
     auto = _auto_tag(content)
