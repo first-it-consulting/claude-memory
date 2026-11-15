@@ -112,7 +112,7 @@ Standard Model Context Protocol (stateless HTTP, SSE or JSON transport). Tools: 
 ### REST (`/api/*` — requires bearer auth)
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/memories` | List or search memories (`?q=&sort=newest|oldest|relevance&category=&agent_id=`) |
+| GET | `/api/memories` | List or search memories (`?q=&sort=newest|oldest|relevance&category=&agent_id=&tag=`) |
 | POST | `/api/memories` | Add a memory (`{"content": "...", "agent_id": "..."}`) — queued if Redis is enabled |
 | PUT | `/api/memories/{id}` | Edit memory content |
 | PATCH | `/api/memories/{id}/tags` | Replace tags (`{"tags": [...]}`) |
@@ -123,7 +123,7 @@ Standard Model Context Protocol (stateless HTTP, SSE or JSON transport). Tools: 
 | GET | `/api/tag-rules` | List auto-tagging rules (keyword → tag) |
 | POST | `/api/tag-rules` | Add a rule (`{"tag": "...", "keyword": "..."}`) |
 | DELETE | `/api/tag-rules/{tag}/{keyword}` | Remove a rule |
-| GET | `/api/jobs` / `/api/jobs/{id}` | List dedup job runs / fetch one run (Redis queue mode) |
+| GET | `/api/jobs` / `/api/jobs/{id}` | List nightly job runs (one row per phase, with a `details` report) / fetch one run |
 | GET | `/api/sessions` | List session checkpoints (`?project=&limit=`), newest first |
 | GET / PUT | `/api/sessions/{id}` | Read / upsert a session checkpoint (`{"state": "...", "project": "..."}`) |
 | GET | `/api/hooks/briefing` | Text to inject at session start / after compaction (`?session_id=&project=&source=startup\|resume\|compact&tool=`) |

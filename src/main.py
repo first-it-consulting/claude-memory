@@ -833,6 +833,7 @@ async def app(scope, receive, send):
             sort = qs.get("sort", "newest")  # newest | oldest | relevance
             filter_agent = qs.get("agent_id", "").strip()
             filter_category = qs.get("category", "").strip()
+            filter_tag = qs.get("tag", "").strip().lower()
 
             if q:
                 results = await _to_thread(mem_store.search, q, limit=200)
@@ -846,6 +847,8 @@ async def app(scope, receive, send):
 
             if filter_category:
                 results = [r for r in results if _extract_meta(r).get("category", "") == filter_category]
+            if filter_tag:
+                results = [r for r in results if filter_tag in (_extract_meta(r).get("tags") or [])]
 
             await _send_response(send, *_json_response([_memory_dict(r) for r in results]))
             return
