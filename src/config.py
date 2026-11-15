@@ -30,5 +30,28 @@ class Settings(BaseSettings):
     hook_search_timeout: float = 8.0     # seconds; hooks must never stall the harness
     get_all_default_limit: int = 50      # MCP get_all_memories default page size
 
+    # Used only when add_memory is called with infer=True (the MCP default is
+    # infer=False: notes are stored as written). Tested 2026-11-15 with
+    # llama3.2: extraction dropped notes, turned "outdated 7.7 -> 10.7" into
+    # "User upgraded to 10.7", and re-extracted earlier notes from mem0's
+    # "Last k Messages" context. mem0's built-in prompt looks for personal facts
+    # about "the user"; technical notes ("Backups run at 3:00") came back with
+    # no facts and were dropped silently. These instructions are appended to
+    # mem0's extraction prompt; set MEM0_CUSTOM_INSTRUCTIONS="" to disable.
+    mem0_custom_instructions: str = (
+        "This memory store serves AI coding agents working on a homelab and its software projects. "
+        "Every input is a note an agent was explicitly asked to keep, so it always contains something memorable. "
+        "Extract every concrete fact: infrastructure, hosts, clusters, services, configuration, versions, "
+        "schedules and times, decisions with their reasons, failed approaches (dead ends), incidents and fixes, "
+        "conventions and preferences. Keep names, paths, numbers and versions exactly as written. "
+        "Extract ONLY from the New Messages; earlier messages are context, never extract them again. "
+        "Write each memory as a self-contained statement about the subject itself, "
+        "not as 'User has ...' unless it is about the user personally. "
+        "Never return an empty list: if nothing else fits, return the new note itself, condensed, as one memory."
+    )
+    # If extraction still yields nothing, store the note as written (infer=False)
+    # instead of dropping it. Duplicates are merged by the nightly dedup job.
+    add_raw_fallback: bool = True
+
 
 settings = Settings()

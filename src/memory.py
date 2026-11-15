@@ -239,6 +239,7 @@ def get_job_run(run_id: str) -> Optional[dict]:
 
 def _build_config() -> MemoryConfig:
     return MemoryConfig(
+        custom_instructions=settings.mem0_custom_instructions or None,
         vector_store=VectorStoreConfig(
             provider="pgvector",
             config={
@@ -312,13 +313,15 @@ def add(content: str, agent_id: str = "", infer: Optional[bool] = None, category
     merged = sorted(set(auto) | set(explicit))
     if merged:
         metadata["tags"] = merged
-    result = m.add(
-        content,
-        user_id=settings.mem0_user_id,
-        agent_id=_agent_id(agent_id),
-        infer=settings.mem0_infer if infer is None else infer,
-        metadata=metadata if metadata else None,
-    )
+    do_infer = settings.mem0_infer if infer is None else infer
+    kwargs = dict(user_id=settings.mem0_user_id, agent_id=_agent_id(agent_id),
+                  metadata=metadata if metadata else None)
+    result = m.add(content, infer=do_infer, **kwargs)
+    if do_infer and settings.add_raw_fallback and not (result or {}).get("results"):
+        # The LLM extracted no facts (or judged the note a duplicate). The agent
+        # asked to keep it, so store it as written rather than dropping it.
+        result = m.add(content, infer=False, **kwargs)
+        result = {**(result or {}), "fallback": "raw"}
     return result
 
 
