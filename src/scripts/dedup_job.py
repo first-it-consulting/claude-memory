@@ -37,6 +37,8 @@ import psycopg2
 import psycopg2.extras
 import requests
 
+import promotion  # sibling module: checkpoint parsing
+
 log = logging.getLogger("dedup")
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
@@ -46,6 +48,10 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
 MEMORY_URL = os.environ.get("CLAUDE_MEMORY_URL", "http://claude-memory:8080")
 MEMORY_TOKEN = os.environ.get("CLAUDE_MEMORY_TOKEN", "")
 TAGGING_MODE = os.environ.get("TAGGING_MODE", "keyword")  # keyword | llm | hybrid
+# Checkpoint promotion: off | dry-run (report only, the default) | on
+PROMOTE_MODE = os.environ.get("PROMOTE_MODE", "dry-run").strip().lower()
+PROMOTE_IDLE_HOURS = float(os.environ.get("PROMOTE_IDLE_HOURS", "12"))
+PROMOTE_DUP_THRESHOLD = float(os.environ.get("PROMOTE_DUP_THRESHOLD", "0.92"))
 
 ARCHIVE_TABLE = "mem0_archive"
 MEM_TABLE = "mem0"
@@ -100,6 +106,7 @@ def ensure_job_runs_table(cur: psycopg2.extensions.cursor) -> None:
             error            TEXT
         )
     """)
+    cur.execute("ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS details TEXT")
 
 
 def start_job_phase(conn, phase: str) -> str:
@@ -121,10 +128,12 @@ def finish_job_phase(
     changed: int = 0,
     rules_added: int = 0,
     error: Optional[str] = None,
+    details: Optional[str] = None,
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """UPDATE job_runs SET
+               details          = COALESCE(%s, details),
                finished_at      = now(),
                status           = %s,
                memories_scanned = %s,
@@ -133,7 +142,7 @@ def finish_job_phase(
                duration_seconds = EXTRACT(EPOCH FROM (now() - started_at)),
                error            = %s
                WHERE id = %s""",
-            (status, scanned, changed, rules_added, error, run_id),
+            (details, status, scanned, changed, rules_added, error, run_id),
         )
     conn.commit()
 
@@ -505,7 +514,8 @@ def delete_memory_direct(memory_id: str) -> None:
 
 
 def store_memory_direct(content: str, agent_id: str = "", category: str = "",
-                        tags: Optional[list] = None) -> Optional[str]:
+                        tags: Optional[list] = None,
+                        extra_metadata: Optional[dict] = None) -> Optional[str]:
     """Store the merged memory verbatim, in-process (the job runs in the server
     image and gets the server's env). Returns the new id, or None — callers must
     then keep the originals. (The old MCP-over-HTTP call could not parse the
@@ -517,7 +527,8 @@ def store_memory_direct(content: str, agent_id: str = "", category: str = "",
         import memory as mstore  # server module
 
         result = mstore.add(content, agent_id=agent_id, infer=False,
-                            category=category, tags=tags or [])
+                            category=category, tags=tags or [],
+                            extra_metadata=extra_metadata)
         results = (result or {}).get("results") or []
         return results[0].get("id") if results else None
     except Exception as e:
@@ -614,6 +625,112 @@ def phase2_semantic_dedup(conn, threshold: float, dry_run: bool) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint promotion
+# ---------------------------------------------------------------------------
+
+def _mstore():
+    """The server's memory module (the job runs in the server image)."""
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    import memory as mstore  # noqa: E402
+    return mstore
+
+
+def find_duplicate(text: str, threshold: float) -> Optional[float]:
+    """Best similarity of an existing memory to `text` if >= threshold, else None.
+    Raises when the search itself fails, so nothing is promoted blind."""
+    hits = _mstore().search(text, limit=3) or []
+    best = max((h.get("score") or 0.0 for h in hits), default=0.0)
+    return best if best >= threshold else None
+
+
+def promotable_sessions(conn, idle_hours: float) -> list[dict]:
+    """Finished sessions (idle for idle_hours) with a checkpoint that was not
+    promoted yet, or that changed since it was promoted."""
+    with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+        cur.execute("ALTER TABLE session_state ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMPTZ")
+        cur.execute(
+            """SELECT session_id, project, harness, state, updated_at
+               FROM session_state
+               WHERE state <> ''
+                 AND updated_at < now() - make_interval(secs => %s)
+                 AND (promoted_at IS NULL OR updated_at > promoted_at)
+               ORDER BY updated_at""",
+            (idle_hours * 3600,),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    conn.commit()
+    return rows
+
+
+def phase_promote_checkpoints(conn, dry_run: bool, mode: str = PROMOTE_MODE,
+                              idle_hours: float = PROMOTE_IDLE_HOURS,
+                              threshold: float = PROMOTE_DUP_THRESHOLD) -> int:
+    """Copy Decisions / Dead ends of finished sessions into long-term memory,
+    verbatim, tagged auto-promoted. dry-run writes only the job_runs report."""
+    if mode == "off":
+        log.info("Checkpoint promotion: skipped (PROMOTE_MODE=off)")
+        return 0
+    dry = dry_run or mode != "on"
+    log.info("Checkpoint promotion (%s, idle >= %.0fh)", "dry run" if dry else "on", idle_hours)
+    run_id = start_job_phase(conn, "checkpoint-promotion")
+    promoted, sessions, report = 0, [], []
+    try:
+        sessions = promotable_sessions(conn, idle_hours)
+        seen: set[str] = set()
+        for s in sessions:
+            kept, dropped = promotion.candidates(s["state"], s["project"], s["harness"])
+            if not kept and not dropped:
+                if not dry:
+                    _mark_promoted(conn, s["session_id"])
+                continue
+            report.append(f"## {s['project'] or '-'} · {s['harness'] or '-'} · session {s['session_id']}")
+            for c in kept:
+                key = c["text"].lower()
+                if key in seen:
+                    report.append(f"  skip (same line in another session): {c['content']}")
+                    continue
+                seen.add(key)
+                dup = find_duplicate(c["content"], threshold) or find_duplicate(c["text"], threshold)
+                if dup is not None:
+                    report.append(f"  skip (already known, {dup:.2f}): {c['content']}")
+                    continue
+                if dry:
+                    report.append(f"  WOULD PROMOTE: {c['content']}")
+                    promoted += 1
+                    continue
+                new_id = store_memory_direct(
+                    c["content"], agent_id=s["harness"] or "", category="project", tags=c["tags"],
+                    extra_metadata={"source": "checkpoint", "session_id": s["session_id"]})
+                if not new_id:
+                    raise RuntimeError(f"storing failed: {c['content'][:80]}")
+                report.append(f"  promoted: {c['content']}")
+                promoted += 1
+            for kind, text in dropped:
+                report.append(f"  ignored (too short or session-only): {text}")
+            if not dry:
+                _mark_promoted(conn, s["session_id"])
+        header = (f"{'DRY RUN — nothing stored. Set PROMOTE_MODE=on to promote.' if dry else 'Promoted.'}"
+                  f" Sessions idle >= {idle_hours:.0f}h: {len(sessions)}.")
+        finish_job_phase(conn, run_id, "completed", scanned=len(sessions), changed=promoted,
+                         details="\n".join([header, ""] + report)[:20000])
+    except Exception as e:
+        conn.rollback()
+        finish_job_phase(conn, run_id, "failed", scanned=len(sessions), changed=promoted,
+                         error=str(e), details="\n".join(report)[:20000] or None)
+        log.error("Checkpoint promotion failed: %s", e)
+    log.info("Checkpoint promotion done: %d line(s)%s", promoted, " (dry run)" if dry else "")
+    return promoted
+
+
+def _mark_promoted(conn, session_id: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute("UPDATE session_state SET promoted_at = now() WHERE session_id = %s", (session_id,))
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -631,8 +748,8 @@ def main() -> None:
         sys.exit(1)
 
     log.info(
-        "Starting job (dry_run=%s, threshold=%.2f, tagging_mode=%s)",
-        args.dry_run, args.threshold, TAGGING_MODE,
+        "Starting job (dry_run=%s, threshold=%.2f, tagging_mode=%s, promote_mode=%s)",
+        args.dry_run, args.threshold, TAGGING_MODE, PROMOTE_MODE,
     )
 
     conn = connect()
@@ -648,6 +765,8 @@ def main() -> None:
             return
 
         if not args.phase1_only and not args.phase2_only:
+            # Promote first, so tonight's dedup already sees the new entries.
+            phase_promote_checkpoints(conn, args.dry_run)
             phase0_llm_tagging(conn, args.dry_run)
 
         if not args.phase2_only:

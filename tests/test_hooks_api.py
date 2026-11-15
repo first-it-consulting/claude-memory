@@ -170,3 +170,18 @@ def test_briefing_registers_project_for_later_mcp_checkpoint(api):
     api.put("/api/sessions/reg1", {"state": "## Goal\nregistered goal"})  # no project, like MCP
     ctx = briefing(api, session_id="next", project="pX", source="startup")
     assert "Last session on pX" in ctx and "registered goal" in ctx
+
+
+def test_auto_promoted_memories_rank_lower_and_filter_by_tag(api, fake_mem):
+    base = {"agent_id": "t", "created_at": "2026-11-01", "updated_at": "2026-11-01"}
+    fake_mem.corpus += [
+        {"id": "promo", "memory": "kubeval ci ssl errors removed", **base,
+         "metadata": {"tags": ["auto-promoted", "decision"]}},
+        {"id": "manual", "memory": "kubeval ci ssl errors removed", **base,
+         "metadata": {"tags": ["ci"]}},
+    ]
+    ctx = api.get("/api/hooks/recall", q="why was kubeval removed from ci ssl errors?").json()["context"]
+    lines = [l for l in ctx.splitlines() if "kubeval" in l]
+    assert "#ci" in lines[0] and "auto-promoted" in lines[1]
+    ids = [m["id"] for m in api.get("/api/memories", tag="auto-promoted").json()]
+    assert ids == ["promo"]

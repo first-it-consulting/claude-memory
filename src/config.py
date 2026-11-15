@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     auto_notes_max_chars: int = 3000     # pre-compaction auto-capture is truncated to this
     briefing_max_chars: int = 9000       # cap for /api/hooks/briefing output (~2.2k tokens)
     recall_min_score: float = 0.6        # cosine similarity (mem0 pgvector: 1 - distance)
+    promoted_recall_penalty: float = 0.05  # auto-promoted checkpoint lines rank below deliberate memories
     recall_limit: int = 3                # memories injected per prompt by /api/hooks/recall
     recall_min_prompt_chars: int = 12    # skip recall for "yes", "1", "go on" ...
     hook_hit_max_chars: int = 400        # per-memory text cap in hook output (recall + briefing)
