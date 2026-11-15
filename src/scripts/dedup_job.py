@@ -433,6 +433,8 @@ def _strip_preamble(text: str) -> str:
     lines = (text or "").strip().splitlines()
     while lines and re.fullmatch(r"\s*(\*\*)?((merged|combined|final)\s+)?memory(\s+text)?:?(\*\*)?:?\s*|\s*here is.*:\s*", lines[0], re.I):
         lines = lines[1:]
+    # drop the model's own remarks, e.g. "- (no specific date mentioned in both memories)"
+    lines = [l for l in lines if not re.fullmatch(r"\s*(?:[-*]\s*)?\([^()]*\)\s*", l)]
     return "\n".join(lines).strip()
 
 
@@ -442,7 +444,8 @@ def ollama_merge(texts: list[str]) -> Optional[str]:
         f"You have {len(texts)} similar memory entries. "
         "Produce a single, comprehensive merged memory that captures all unique information. "
         "Be concise but complete. Preserve specific details like dates, names, file paths, "
-        "and technical values. Output ONLY the merged memory text, nothing else.\n\n"
+        "and technical values. Do not add notes, comments or remarks about the merge "
+        "or about what is missing. Output ONLY the merged memory text, nothing else.\n\n"
         f"{numbered}"
     )
     try:
