@@ -35,7 +35,10 @@ Then for each harness you use:
 - **Codex**: merge `codex/config.hooks.toml` into `~/.codex/config.toml`, then run `/hooks`
   once to trust the new hooks. Codex doesn't run untrusted hooks.
 - **Pi**: `cp pi/agent-memory.ts ~/.pi/agent/extensions/` and run `/reload`. It reads the same
-  env file. It was typechecked against pi 1.5.2 (`@earendil-works/pi-coding-agent`).
+  env file. It was typechecked against pi 1.5.2 and 0.85.1 (`@earendil-works/pi-coding-agent`).
+  If pi also reaches claude-memory through an MCP bridge extension, hide the server's
+  `checkpoint` / `get_checkpoint` there. Otherwise the model sees two checkpoint tools and may
+  pick the MCP one, which takes a free-text `project` instead of the repo name.
 
 Quick check without a harness:
 
@@ -43,6 +46,40 @@ Quick check without a harness:
 echo '{"session_id":"test","cwd":"'$PWD'","source":"startup"}' \
   | python3 ~/.config/agent-memory/memory_hook.py session-start --harness claude
 ```
+
+## Global instructions (recommended)
+
+The hooks already tell the model to checkpoint: in the briefing at session start, again
+after every compaction, and in the `checkpoint` tool description. Add one line to each
+harness's **global** instructions file anyway:
+
+- **Long sessions:** the briefing arrives only at the start and after compactions. Between
+  them, models forget to checkpoint, and work since the last checkpoint is lost at the next
+  compaction. The global instructions file stays in context the whole time.
+- **Clients without hooks:** MCP clients without an adapter (Claude Desktop, open-webui, …)
+  never get the briefing. The line covers them as far as they read an instructions file.
+
+| Harness | Global instructions file | Tool name |
+|---|---|---|
+| Claude Code | `~/.claude/CLAUDE.md` | `checkpoint` |
+| Codex | `~/.codex/AGENTS.md` | `checkpoint` |
+| Qwen Code | `~/.qwen/QWEN.md` | `checkpoint` |
+| Pi | `~/.pi/agent/AGENTS.md` | `memory_checkpoint` |
+
+Text (adjust the tool name):
+
+```markdown
+## Memory checkpoints (claude-memory)
+
+After each milestone, decision or failed attempt, save a memory checkpoint (claude-memory MCP
+tool `checkpoint`, session_id from the memory briefing) with the full current state:
+Goal / Done / Decisions + why / Dead ends / Next. Always checkpoint before a long or risky
+step (large build, deploy, refactor). The checkpoint is re-injected after context
+compaction, so keep it current and condensed.
+```
+
+Put it in the global file, not in each project's `CLAUDE.md` / `AGENTS.md`: it applies to
+every repo, and per-project copies drift apart.
 
 ## Safety rules the adapters follow
 
