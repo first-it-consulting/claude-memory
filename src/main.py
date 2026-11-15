@@ -50,7 +50,7 @@ async def add_memory(content: str, agent_id: str = "", infer: bool = True, categ
     tags: free-form list, e.g. ["prod-k8s", "remnant", "cnpg"] — use app names, cluster names, topics.
     Set infer=False to store as-is."""
     if category and category not in mem_store.VALID_CATEGORIES:
-        return f"Invalid category '{category}'. Valid: {', '.join(sorted(mem_store.VALID_CATEGORIES) - {''})}"
+        return f"Invalid category '{category}'. Valid: {', '.join(sorted(mem_store.VALID_CATEGORIES - {''}))}"
     # Always queue: an inferred add takes tens of seconds on CPU Ollama and the
     # caller doesn't need the extraction result.
     try:
@@ -249,19 +249,32 @@ async def _mcp_handler_strip_output_schema(scope, receive, send):
 
     await _mcp_handler(scope, receive, _capture)
 
+    def _strip(obj):
+        if isinstance(obj, dict):
+            for t in (obj.get("result") or {}).get("tools", []) or []:
+                t.pop("outputSchema", None)
+        return obj
+
     raw = b"".join(body_parts).decode("utf-8", errors="replace")
-    out = []
-    for line in raw.splitlines():
-        if line.startswith("data:"):
-            try:
-                obj = json.loads(line[5:].strip())
-                for t in obj.get("result", {}).get("tools", []):
-                    t.pop("outputSchema", None)
-                line = "data: " + json.dumps(obj)
-            except Exception:
-                pass
-        out.append(line)
-    new_body = "\n".join(out).encode("utf-8")
+    new_body = None
+    # json_response=True (our config) returns a plain JSON body; SSE framing is
+    # handled too in case a client negotiates an event stream.
+    try:
+        new_body = json.dumps(_strip(json.loads(raw))).encode("utf-8")
+    except ValueError:
+        out = []
+        for line in raw.splitlines():
+            if line.startswith("data:"):
+                try:
+                    line = "data: " + json.dumps(_strip(json.loads(line[5:].strip())))
+                except ValueError:
+                    pass
+            out.append(line)
+        new_body = ("\n".join(out) + ("\n" if raw.endswith("\n") else "")).encode("utf-8")
+
+    # The body changed size: replace the original content-length.
+    headers_out = [h for h in headers_out if bytes(h[0]).lower() != b"content-length"]
+    headers_out.append((b"content-length", str(len(new_body)).encode()))
 
     await send({"type": "http.response.start", "status": status_out or 200, "headers": headers_out})
     await send({"type": "http.response.body", "body": new_body})

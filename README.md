@@ -147,6 +147,27 @@ python src/main.py        # serves on 0.0.0.0:8080
 
 ---
 
+## Testing
+
+The suite starts the real ASGI app against a real PostgreSQL, with mem0 replaced
+by an in-process fake, so it needs neither pgvector nor Ollama. It covers the MCP
+tools over `/mcp`, the REST and hook endpoints, and the adapter script, which is
+run as a subprocess the same way harnesses call it.
+
+```bash
+docker run --rm -d --name mem0-test -p 5432:5432 \
+  -e POSTGRES_USER=mem0 -e POSTGRES_PASSWORD=mem0 -e POSTGRES_DB=mem0_test postgres:16
+pip install -r requirements-dev.txt
+TEST_DATABASE_URL=postgresql://mem0:mem0@localhost:5432/mem0_test pytest
+```
+
+Without `TEST_DATABASE_URL`, only the DB-independent tests run. With `REQUIRE_DB=1`
+(set in CI), a missing database is an error instead of a skip. CI
+(`.github/workflows/test.yml`) runs on Python 3.13 and 3.15 and also typechecks
+the Pi extension.
+
+---
+
 ## Project layout
 
 ```
@@ -154,6 +175,8 @@ python src/main.py        # serves on 0.0.0.0:8080
 ├── docker-bake.hcl            # buildx bake targets (image / image-local / image-all)
 ├── requirements-mcp.txt       # Python dependencies (mcp, mem0, psycopg2, ollama, redis…)
 ├── tests.yaml                 # Container Structure Tests (critical imports resolve)
+├── tests/                     # pytest suite (see Testing)
+├── requirements-dev.txt       # test dependencies
 ├── renovate.json5             # dependency updates; blocks mcp major (v2 dropped fastmcp)
 └── src/
     ├── main.py                # ASGI app: MCP tools + REST API + /health + /metrics
