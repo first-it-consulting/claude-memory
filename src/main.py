@@ -45,11 +45,14 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def add_memory(content: str, agent_id: str = "", infer: bool = True, category: str = "", tags: list[str] = []) -> str:
-    """Store a fact or observation in memory.
+async def add_memory(content: str, agent_id: str = "", infer: bool = False, category: str = "", tags: list[str] = []) -> str:
+    """Store a fact or observation in long-term memory (shared by all agents).
+    Write it as one or more condensed, self-contained statements — it is stored
+    exactly as written. Keep names, paths, versions and numbers precise.
     category: project|feedback|reference|user|session|incident
     tags: free-form list, e.g. ["prod-k8s", "remnant", "cnpg"] — use app names, cluster names, topics.
-    Set infer=False to store as-is."""
+    infer=True lets the server's small LLM rephrase/split the note first (slow; it
+    can distort technical details — only for long, chatty input)."""
     if category and category not in mem_store.VALID_CATEGORIES:
         return f"Invalid category '{category}'. Valid: {', '.join(sorted(mem_store.VALID_CATEGORIES - {''}))}"
     # Always queue: an inferred add takes tens of seconds on CPU Ollama and the

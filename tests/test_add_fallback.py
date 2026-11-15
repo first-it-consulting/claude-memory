@@ -61,11 +61,23 @@ def test_custom_instructions_reach_mem0_config():
 
 
 @pytest.mark.db
-def test_mcp_add_memory_is_stored_even_without_extracted_facts(server, fake_mem):
+def test_mcp_add_memory_with_infer_falls_back_when_no_facts(server, fake_mem):
     out = json.loads(call_tool(server, "add_memory", content="Backups run at 3:00 (daily schedule).",
-                               category="reference", tags=["backups"]))
+                               category="reference", tags=["backups"], infer=True))
     assert out["queued"] is True
     deadline = time.time() + 10
     while time.time() < deadline and len(_adds(fake_mem)) < 2:
         time.sleep(0.1)
     assert [c[2]["infer"] for c in _adds(fake_mem)] == [True, False]
+
+
+@pytest.mark.db
+def test_mcp_add_memory_stores_as_written_by_default(server, fake_mem):
+    call_tool(server, "add_memory", content="Backups run at 3:00 (daily schedule).", category="reference")
+    deadline = time.time() + 10
+    while time.time() < deadline and not _adds(fake_mem):
+        time.sleep(0.1)
+    time.sleep(0.3)
+    adds = _adds(fake_mem)
+    assert [c[2]["infer"] for c in adds] == [False]
+    assert adds[0][1] == "Backups run at 3:00 (daily schedule)."

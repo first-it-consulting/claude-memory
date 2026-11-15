@@ -67,7 +67,9 @@ All settings come from environment variables (`.env` file is auto-loaded). See `
 | `ANTHROPIC_API_KEY` | *(empty)* | Optional: let mem0 use Anthropic for inference instead of Ollama. |
 | `MEM0_USER_ID` | `default` | mem0 user id used as a filter namespace. |
 | `MEM0_AGENT_ID` | `default` | Fallback agent id when no `X-Agent-ID` header is sent. |
-| `MEM0_INFER` | `true` | Enable LLM extraction / auto-categorization on add. |
+| `MEM0_INFER` | `true` | LLM extraction on add for callers that don't choose (REST). The MCP `add_memory` tool stores notes **as written** unless called with `infer=true`: with small local models extraction dropped, distorted and mixed up notes. |
+| `MEM0_CUSTOM_INSTRUCTIONS` | *(technical-notes prompt)* | Appended to mem0's extraction prompt when inferring; `""` disables. |
+| `ADD_RAW_FALLBACK` | `true` | If extraction yields no facts, store the note as written instead of dropping it. |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint for embeddings. |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Model used for text inference / dedup. |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Model used for embeddings. |
