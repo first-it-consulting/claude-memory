@@ -27,6 +27,11 @@ cp adapters/env.example ~/.config/agent-memory/env && chmod 600 ~/.config/agent-
 $EDITOR ~/.config/agent-memory/env          # set AGENT_MEMORY_URL + AGENT_MEMORY_TOKEN
 ```
 
+On a multi-tenant server, `AGENT_MEMORY_TOKEN` is the **personal API token**
+an admin issued for you (`POST /api/users`, shown once) — every agent on your
+machine then works inside your workspace only. The shared `BEARER_TOKEN` still
+works but acts as the `default` workspace.
+
 Then for each harness you use:
 
 - **Claude Code**: merge `claude-code/settings.hooks.json` into `~/.claude/settings.json`.

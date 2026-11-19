@@ -14,6 +14,10 @@ Built on [mem0](https://github.com/mem0ai/mem0) with **pgvector** storage, optio
 - **Semantic memory** — stores, embeds (via Ollama), searches and deduplicates memories using mem0 + pgvector.
 - **Categorization & tagging** — classify memories (`project`, `feedback`, `reference`, `user`, `session`, `incident`) and tag them with free-form labels for filtering and metrics.
 - **REST API** — full CRUD over `/api/*` with bearer-token auth, plus JSON export/import.
+- **Multi-tenancy** — every user gets their own workspace (memories + session
+  checkpoints). Agents authenticate with per-user API tokens, the browser with
+  a Keycloak login; admins see across all workspaces and can publish facts into
+  a shared space that every tenant reads. See [Multi-tenancy](#multi-tenancy).
 - **Async queue (optional)** — set `REDIS_URL` to route writes through a Redis job queue (`remnant:queue:add_memory`) with a background worker, so heavy inference never blocks the request.
 - **Prometheus metrics** — `/metrics` exposes memory counts by category, agent and tag, plus queue depth.
 - **Nightly maintenance** — `dedup_job.py` (CronJob) removes exact and near-duplicate memories (verbatim where possible; LLM merges only if every number, version and path survives; originals archived to `mem0_archive`).
@@ -76,8 +80,55 @@ All settings come from environment variables (`.env` file is auto-loaded). See `
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Model used for embeddings. |
 | `APP_PORT` | `8080` | Port the server listens on. |
 | `REDIS_URL` | *(empty)* | Set to enable the async write queue (requires a reachable Redis). |
+| `ADMIN_TOKEN` | *(empty)* | Bootstrap admin API token (role admin, tenant `default`). Keep it set — it is the recovery path if the users table or Keycloak is unreachable. |
+| `SHARED_TENANT_ID` | `global` | Pseudo-tenant whose memories every workspace can read (admin-published). |
+| `OIDC_ISSUER` | *(empty)* | Keycloak issuer URL; enables browser (JWT) auth when set. |
+| `OIDC_CLIENT_ID` | `claude-memory-ui` | Expected token audience. |
+| `OIDC_AUDIENCE` | *(empty)* | Override the expected audience if it differs from the client id. |
+| `OIDC_ADMIN_ROLES` | `claude-memory-admin` | Comma-separated realm/client roles that grant the admin role. |
+| `OIDC_ADMIN_USERNAMES` | *(empty)* | Comma-separated `preferred_username` fallback for admins. |
+| `OIDC_AUTO_CREATE` | `true` | First Keycloak login auto-creates a `role=user` account. |
 
 The `X-Agent-ID` request header overrides the agent id for a given call.
+
+---
+
+## Multi-tenancy
+
+A **tenant** is a user's workspace. The tenant id doubles as mem0's `user_id`
+namespace, so isolation is mem0's own filter — no data was re-embedded when
+this was introduced: everything that existed before lives in tenant `default`.
+
+**Authentication** (`src/auth.py`, order of resolution):
+
+| Token | Who | Tenant / role |
+|---|---|---|
+| `ADMIN_TOKEN` | operators, recovery | `default` / **admin** |
+| `cm_…` API token | agents (MCP, REST, hooks) | its user / its role |
+| Keycloak JWT | browser (UI login) | mapped by `sub`, role from realm roles |
+| `BEARER_TOKEN` (legacy) | pre-multi-tenancy setups | `default` / user |
+
+API tokens are created through `POST /api/users` (admin) and shown **once**;
+only their SHA-256 hash is stored. Rotate with
+`POST /api/users/{id}/rotate-token`. Keycloak access tokens are verified
+against the realm's JWKS (signature, `iss`, `aud`, `exp`); the first login
+provisions `users` by `preferred_username`, and realm role
+`claude-memory-admin` (or `OIDC_ADMIN_USERNAMES`) grants the admin role on
+every login.
+
+**Isolation rules:**
+
+- Reads (list/search/hooks/MCP) see the caller's workspace **plus the shared
+  space** (`SHARED_TENANT_ID`, default `global`).
+- Writes land in the caller's workspace. Admins publish into the shared space
+  with `POST /api/memories {"content": "...", "shared": true}`.
+- Foreign-tenant memory ids and session ids behave exactly like missing ones
+  (404) — no existence leak. Admin-only endpoints answer 403.
+- Admins may add `?tenant=<id>` or `?scope=all` to memories/stats/export/
+  sessions; `/api/jobs` and tag-rule writes are admin-only (job reports quote
+  other tenants' session lines).
+- The nightly job dedups **within** a tenant only, and checkpoint promotion
+  lands in the session's owning workspace.
 
 ### Checkpoint promotion
 
@@ -109,23 +160,30 @@ writes a line-by-line report to the job run (`details`, shown in the UI's Jobs t
 ### MCP (`POST /mcp`)
 Standard Model Context Protocol (stateless HTTP, SSE or JSON transport). Tools: `add_memory`, `search_memory` (returns `[score] date · category · #tags · id=… — text`), `get_all_memories` (paged, default 50), `update_memory`, `delete_memory`, `checkpoint`, `get_checkpoint`. Server `instructions` explain the checkpoint workflow to clients without hooks.
 
-### REST (`/api/*` — requires bearer auth)
+### REST (`/api/*` — requires bearer auth; every route is tenant-scoped)
+Admins may add `?tenant=<id>` or `?scope=all` where marked *(admin scope)*.
+
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/memories` | List or search memories (`?q=&sort=newest|oldest|relevance&category=&agent_id=&tag=`) |
-| POST | `/api/memories` | Add a memory (`{"content": "...", "agent_id": "..."}`) — queued if Redis is enabled |
-| PUT | `/api/memories/{id}` | Edit memory content |
-| PATCH | `/api/memories/{id}/tags` | Replace tags (`{"tags": [...]}`) |
-| DELETE | `/api/memories/{id}` | Delete a memory |
-| GET | `/api/memories/export` | Download all memories as JSON |
-| POST | `/api/memories/import` | Bulk import a JSON array of memories |
-| GET | `/api/stats` | Aggregate counts (total, first/last added, by agent/category/tag) |
+| GET | `/api/auth/whoami` | Identity of the presented token (`user_id`, `role`, `via`) |
+| GET | `/api/users` *(admin)* | List tenants (no token hashes) |
+| POST | `/api/users` *(admin)* | Create a tenant (`{"id", "name", "role"}`) — returns its API token **once** |
+| GET/PATCH/DELETE | `/api/users/{id}` *(admin)* | Read / change (name, role, disabled) / remove a tenant |
+| POST | `/api/users/{id}/rotate-token` *(admin)* | New API token (shown once, old one dies) |
+| GET | `/api/memories` | List or search memories (`?q=&sort=newest|oldest|relevance&category=&agent_id=&tag=`) *(admin scope)* |
+| POST | `/api/memories` | Add a memory (`{"content": "...", "agent_id": "..."}`, admin: `"shared": true` → shared space) — queued if Redis is enabled |
+| PUT | `/api/memories/{id}` | Edit memory content (own tenant only) |
+| PATCH | `/api/memories/{id}/tags` | Replace tags (`{"tags": [...]}`, own tenant only) |
+| DELETE | `/api/memories/{id}` | Delete a memory (own tenant only) |
+| GET | `/api/memories/export` | Download memories as JSON *(admin scope)* |
+| POST | `/api/memories/import` | Bulk import a JSON array into the caller's workspace |
+| GET | `/api/stats` | Aggregate counts (total, first/last added, by agent/category/tag) *(admin scope)* |
 | GET | `/api/tag-rules` | List auto-tagging rules (keyword → tag) |
-| POST | `/api/tag-rules` | Add a rule (`{"tag": "...", "keyword": "..."}`) |
-| DELETE | `/api/tag-rules/{tag}/{keyword}` | Remove a rule |
-| GET | `/api/jobs` / `/api/jobs/{id}` | List nightly job runs (one row per phase, with a `details` report) / fetch one run |
-| GET | `/api/sessions` | List session checkpoints (`?project=&limit=`), newest first |
-| GET / PUT | `/api/sessions/{id}` | Read / upsert a session checkpoint (`{"state": "...", "project": "..."}`) |
+| POST | `/api/tag-rules` *(admin)* | Add a rule (`{"tag": "...", "keyword": "..."}`) |
+| DELETE | `/api/tag-rules/{tag}/{keyword}` *(admin)* | Remove a rule |
+| GET | `/api/jobs` / `/api/jobs/{id}` *(admin)* | List nightly job runs (one row per phase, with a `details` report) / fetch one run |
+| GET | `/api/sessions` | List session checkpoints (`?project=&limit=`), newest first *(admin scope)* |
+| GET / PUT | `/api/sessions/{id}` | Read / upsert a session checkpoint (`{"state": "...", "project": "..."}`) *(admin scope)* |
 | GET | `/api/hooks/briefing` | Text to inject at session start / after compaction (`?session_id=&project=&source=startup\|resume\|compact&tool=`) |
 | GET | `/api/hooks/recall` | Relevant memories for a prompt above the score threshold (`?q=&limit=&min_score=`) |
 | POST | `/api/hooks/precompact` | Store auto-captured recent turns before compaction (`{session_id, project, notes}`) |

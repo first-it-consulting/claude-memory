@@ -304,8 +304,19 @@ def _agent_id(agent_id: str) -> str:
 VALID_CATEGORIES = {"project", "feedback", "reference", "user", "session", "incident", ""}
 
 
-def add(content: str, agent_id: str = "", infer: Optional[bool] = None, category: str = "",
-        tags: Optional[list] = None, extra_metadata: Optional[dict] = None) -> dict:
+def _tenant(user_id: Optional[str]) -> str:
+    """The tenant (mem0 user_id namespace) an operation runs in."""
+    return user_id or settings.mem0_user_id
+
+
+def _results(result) -> list[dict]:
+    if isinstance(result, dict) and "results" in result:
+        return result["results"]
+    return result if isinstance(result, list) else []
+
+
+def add(content: str, user_id: Optional[str] = None, agent_id: str = "", infer: Optional[bool] = None,
+        category: str = "", tags: Optional[list] = None, extra_metadata: Optional[dict] = None) -> dict:
     m = get_memory()
     metadata: dict = dict(extra_metadata or {})
     if category:
@@ -316,7 +327,7 @@ def add(content: str, agent_id: str = "", infer: Optional[bool] = None, category
     if merged:
         metadata["tags"] = merged
     do_infer = settings.mem0_infer if infer is None else infer
-    kwargs = dict(user_id=settings.mem0_user_id, agent_id=_agent_id(agent_id),
+    kwargs = dict(user_id=_tenant(user_id), agent_id=_agent_id(agent_id),
                   metadata=metadata if metadata else None)
     result = m.add(content, infer=do_infer, **kwargs)
     if do_infer and settings.add_raw_fallback and not (result or {}).get("results"):
@@ -327,24 +338,111 @@ def add(content: str, agent_id: str = "", infer: Optional[bool] = None, category
     return result
 
 
-def search(query: str, limit: int = 5, agent_id: str = "") -> list[dict]:
-    m = get_memory()
-    filters = {"user_id": settings.mem0_user_id}
-    result = m.search(query, filters=filters, top_k=limit)
-    if isinstance(result, dict) and "results" in result:
-        return result["results"]
-    return result if isinstance(result, list) else []
+def _search_one(m: Memory, query: str, tenant: str, top_k: int) -> list[dict]:
+    return _results(m.search(query, filters={"user_id": tenant}, top_k=top_k))
 
 
-def get_all(agent_id: str = "") -> list[dict]:
+def search(query: str, limit: int = 5, agent_id: str = "", user_id: Optional[str] = None,
+           include_shared: bool = True) -> list[dict]:
+    """Semantic search inside one tenant, merged with the shared space.
+
+    Two queries instead of one `user_id IN (...)` filter: mem0's filter
+    support for list values varies by version/provider, and merging two
+    result lists is deterministic across all of them."""
     m = get_memory()
-    filters = {"user_id": settings.mem0_user_id}
+    tenant = _tenant(user_id)
+    tenants = [tenant]
+    if include_shared and tenant != settings.shared_tenant_id:
+        tenants.append(settings.shared_tenant_id)
+    merged: dict[str, dict] = {}
+    for t in tenants:
+        for r in _search_one(m, query, t, limit):
+            rid = str(r.get("id"))
+            prev = merged.get(rid)
+            if prev is None or (r.get("score") or 0) > (prev.get("score") or 0):
+                merged[rid] = r
+    out = sorted(merged.values(), key=lambda r: r.get("score") or 0, reverse=True)
+    if agent_id:
+        out = [r for r in out if r.get("agent_id") == agent_id]
+    return out[:limit]
+
+
+def search_across(query: str, limit: int, tenants: Optional[list[str]] = None) -> list[dict]:
+    """Admin view: search every tenant, best scores first.
+
+    Prefers a single unfiltered search (covers namespaces that exist in the
+    store without a users row); falls back to merging per-tenant searches."""
+    m = get_memory()
+    try:
+        out = _results(m.search(query, filters={}, top_k=limit))
+        return out[:limit]
+    except Exception:
+        pass
+    if tenants is None:
+        import users as users_store
+        tenants = users_store.list_tenant_ids()
+    merged: dict[str, dict] = {}
+    for t in tenants:
+        for r in _search_one(m, query, t, limit):
+            rid = str(r.get("id"))
+            prev = merged.get(rid)
+            if prev is None or (r.get("score") or 0) > (prev.get("score") or 0):
+                merged[rid] = r
+    return sorted(merged.values(), key=lambda r: r.get("score") or 0, reverse=True)[:limit]
+
+
+def _get_all_one(m: Memory, tenant: str, agent_id: str) -> list[dict]:
+    filters = {"user_id": tenant}
     if agent_id:
         filters["agent_id"] = agent_id
-    result = m.get_all(filters=filters, top_k=10000)
-    if isinstance(result, dict) and "results" in result:
-        return result["results"]
-    return result if isinstance(result, list) else []
+    return _results(m.get_all(filters=filters, top_k=10000))
+
+
+def get_all(agent_id: str = "", user_id: Optional[str] = None,
+            include_shared: bool = True) -> list[dict]:
+    m = get_memory()
+    tenant = _tenant(user_id)
+    tenants = [tenant]
+    if include_shared and tenant != settings.shared_tenant_id:
+        tenants.append(settings.shared_tenant_id)
+    merged: dict[str, dict] = {}
+    for t in tenants:
+        for r in _get_all_one(m, t, agent_id):
+            merged.setdefault(str(r.get("id")), r)
+    return list(merged.values())
+
+
+def get_all_across(agent_id: str = "", tenants: Optional[list[str]] = None) -> list[dict]:
+    """Admin view: every tenant's memories (includes the shared space).
+    Prefers a single unfiltered scan; falls back to merging per-tenant reads."""
+    m = get_memory()
+    try:
+        filters = {"agent_id": agent_id} if agent_id else {}
+        return _results(m.get_all(filters=filters, top_k=10000))
+    except Exception:
+        pass
+    if tenants is None:
+        import users as users_store
+        tenants = users_store.list_tenant_ids()
+    merged: dict[str, dict] = {}
+    for t in tenants:
+        for r in _get_all_one(m, t, agent_id):
+            merged.setdefault(str(r.get("id")), r)
+    return list(merged.values())
+
+
+def get_owner(memory_id: str) -> Optional[str]:
+    """The tenant a memory belongs to, or None when it does not exist.
+    Used for ownership checks before update/delete — cross-tenant ids must
+    behave exactly like missing ones (404, no existence leak)."""
+    m = get_memory()
+    try:
+        r = m.get(memory_id)
+    except Exception:
+        return None
+    if not isinstance(r, dict):
+        return None
+    return r.get("user_id") or None
 
 
 def update(memory_id: str, content: str) -> dict:
@@ -357,8 +455,10 @@ def delete(memory_id: str) -> dict:
     return m.delete(memory_id)
 
 
-def update_tags(memory_id: str, tags: list) -> bool:
-    """Directly patch the tags field in the DB payload, preserving all other metadata."""
+def update_tags(memory_id: str, tags: list, user_id: Optional[str] = None,
+                allow_all: bool = False) -> bool:
+    """Directly patch the tags field in the DB payload, preserving all other
+    metadata. Fails (False) when the memory belongs to another tenant."""
     conn = _db_conn()
     try:
         with conn:
@@ -368,6 +468,13 @@ def update_tags(memory_id: str, tags: list) -> bool:
                 if not row:
                     return False
                 payload = row[0]
+                if not allow_all and payload.get("user_id") != _tenant(user_id):
+                    return False
+    except Exception:
+        return False  # store unreachable or bad id — indistinguishable for the caller
+    try:
+        with conn:
+            with conn.cursor() as cur:
                 meta = payload.get("metadata") or {}
                 if isinstance(meta.get("metadata"), dict):
                     meta["metadata"]["tags"] = tags
@@ -394,12 +501,14 @@ def update_tags(memory_id: str, tags: list) -> bool:
 _session_schema_ok = False
 _session_schema_lock = threading.Lock()
 
-_SESSION_COLUMNS = "session_id, project, harness, state, auto_notes, created_at, updated_at"
+_SESSION_COLUMNS = "session_id, owner, project, harness, state, auto_notes, created_at, updated_at"
 
 
 def _ensure_session_table() -> None:
     """Create session_state lazily — the import-time schema step is non-fatal,
-    so the DB may not have been reachable when the process started."""
+    so the DB may not have been reachable when the process started. Additive
+    only: `owner` (the tenant a session belongs to) is added with
+    IF NOT EXISTS so an old image keeps working after migration."""
     global _session_schema_ok
     if _session_schema_ok:
         return
@@ -422,41 +531,60 @@ def _ensure_session_table() -> None:
                         )
                     """)
                     cur.execute(
+                        "ALTER TABLE session_state ADD COLUMN IF NOT EXISTS "
+                        "owner TEXT NOT NULL DEFAULT 'default'"
+                    )
+                    cur.execute(
                         "CREATE INDEX IF NOT EXISTS session_state_project_idx "
                         "ON session_state (project, updated_at DESC)"
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS session_state_owner_idx "
+                        "ON session_state (owner, updated_at DESC)"
                     )
             _session_schema_ok = True
         finally:
             conn.close()
 
 
-def _upsert_session(session_id: str, column: str, value: str, project: str, harness: str) -> dict:
+def _upsert_session(session_id: str, column: str, value: str, project: str, harness: str,
+                    owner: Optional[str] = None) -> dict:
     assert column in ("state", "auto_notes")
     _ensure_session_table()
+    tenant = _tenant(owner)
     conn = _db_conn()
     try:
         with conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                # Empty project/harness never overwrite known values.
+                # Empty project/harness never overwrite known values. The owner
+                # of an existing row never changes: a session belongs to the
+                # tenant that created it.
                 cur.execute(
                     f"""
-                    INSERT INTO session_state (session_id, project, harness, {column})
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO session_state (session_id, owner, project, harness, {column})
+                    VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (session_id) DO UPDATE SET
                         {column}   = EXCLUDED.{column},
                         project    = COALESCE(NULLIF(EXCLUDED.project, ''), session_state.project),
                         harness    = COALESCE(NULLIF(EXCLUDED.harness, ''), session_state.harness),
                         updated_at = now()
+                    WHERE session_state.owner = EXCLUDED.owner
                     RETURNING {_SESSION_COLUMNS}
                     """,
-                    (session_id, project or "", harness or "", value),
+                    (session_id, tenant, project or "", harness or "", value),
                 )
-                return dict(cur.fetchone())
+                row = cur.fetchone()
+                if row is None:
+                    # Row exists under another tenant (or insert raced): behave
+                    # like it does not exist for this caller.
+                    return None
+                return dict(row)
     finally:
         conn.close()
 
 
-def register_session(session_id: str, project: str = "", harness: str = "") -> None:
+def register_session(session_id: str, project: str = "", harness: str = "",
+                     owner: Optional[str] = None) -> None:
     """Create the session row or fill in missing project/harness, without
     touching state, auto_notes or updated_at (an empty row is not listed as a
     previous session, see list_checkpoints)."""
@@ -469,45 +597,65 @@ def register_session(session_id: str, project: str = "", harness: str = "") -> N
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO session_state (session_id, project, harness)
-                    VALUES (%s, %s, %s)
+                    INSERT INTO session_state (session_id, owner, project, harness)
+                    VALUES (%s, %s, %s, %s)
                     ON CONFLICT (session_id) DO UPDATE SET
                         project = COALESCE(NULLIF(EXCLUDED.project, ''), session_state.project),
                         harness = COALESCE(NULLIF(EXCLUDED.harness, ''), session_state.harness)
+                    WHERE session_state.owner = EXCLUDED.owner
                     """,
-                    (session_id, project or "", harness or ""),
+                    (session_id, _tenant(owner), project or "", harness or ""),
                 )
     finally:
         conn.close()
 
 
-def put_checkpoint(session_id: str, state: str, project: str = "", harness: str = "") -> dict:
-    return _upsert_session(session_id, "state", state, project, harness)
+def put_checkpoint(session_id: str, state: str, project: str = "", harness: str = "",
+                   owner: Optional[str] = None) -> Optional[dict]:
+    return _upsert_session(session_id, "state", state, project, harness, owner)
 
 
-def put_auto_notes(session_id: str, notes: str, project: str = "", harness: str = "") -> dict:
-    return _upsert_session(session_id, "auto_notes", notes, project, harness)
+def put_auto_notes(session_id: str, notes: str, project: str = "", harness: str = "",
+                   owner: Optional[str] = None) -> Optional[dict]:
+    return _upsert_session(session_id, "auto_notes", notes, project, harness, owner)
 
 
-def delete_checkpoint(session_id: str) -> bool:
-    """Delete a session row. Returns False if it did not exist."""
+def delete_checkpoint(session_id: str, owner: Optional[str] = None) -> bool:
+    """Delete a session row. Returns False if it did not exist (or belongs to
+    another tenant — indistinguishable on purpose)."""
     _ensure_session_table()
     conn = _db_conn()
     try:
         with conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM session_state WHERE session_id = %s", (session_id,))
+                if owner is None:
+                    cur.execute("DELETE FROM session_state WHERE session_id = %s", (session_id,))
+                else:
+                    cur.execute(
+                        "DELETE FROM session_state WHERE session_id = %s AND owner = %s",
+                        (session_id, _tenant(owner)),
+                    )
                 return cur.rowcount > 0
     finally:
         conn.close()
 
 
-def get_checkpoint(session_id: str) -> Optional[dict]:
+def get_checkpoint(session_id: str, owner: Optional[str] = None) -> Optional[dict]:
+    """A session's checkpoint. owner=None reads across tenants (admin/scripts)."""
     _ensure_session_table()
     conn = _db_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(f"SELECT {_SESSION_COLUMNS} FROM session_state WHERE session_id = %s", (session_id,))
+            if owner is None:
+                cur.execute(
+                    f"SELECT {_SESSION_COLUMNS} FROM session_state WHERE session_id = %s",
+                    (session_id,),
+                )
+            else:
+                cur.execute(
+                    f"SELECT {_SESSION_COLUMNS} FROM session_state WHERE session_id = %s AND owner = %s",
+                    (session_id, _tenant(owner)),
+                )
             row = cur.fetchone()
             return dict(row) if row else None
     finally:
@@ -515,11 +663,15 @@ def get_checkpoint(session_id: str) -> Optional[dict]:
 
 
 def list_checkpoints(project: str = "", exclude_session: str = "", limit: int = 10,
-                     harness: str = "") -> list[dict]:
-    """Most recently updated sessions with a non-empty state, newest first."""
+                     harness: str = "", owner: Optional[str] = None) -> list[dict]:
+    """Most recently updated sessions with a non-empty state, newest first.
+    owner=None lists across all tenants (admin/scripts)."""
     _ensure_session_table()
     clauses = ["(state <> '' OR auto_notes <> '')"]
     params: list = []
+    if owner is not None:
+        clauses.append("owner = %s")
+        params.append(_tenant(owner))
     if project:
         clauses.append("project = %s")
         params.append(project)

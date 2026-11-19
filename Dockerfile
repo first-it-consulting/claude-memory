@@ -10,7 +10,7 @@ COPY requirements-mcp.txt .
 RUN pip install --no-cache-dir -r requirements-mcp.txt \
     && pip uninstall -y pip
 
-COPY src/main.py src/memory.py src/config.py src/queue_worker.py ./src/
+COPY src/*.py ./src/
 COPY src/scripts/*.py ./src/scripts/
 
 USER appuser

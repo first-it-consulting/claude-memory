@@ -112,15 +112,17 @@ def server(fake_mem):
 
 @pytest.fixture(autouse=True)
 def _clean_sessions(request):
-    """Every DB test starts with an empty session_state table."""
+    """Every DB test starts with empty session_state and users tables."""
     if "db" in request.keywords and DB_OK:
         import psycopg2
         import memory as mem_store
+        import users as users_store
         mem_store._ensure_session_table()
+        users_store.ensure_table()
         conn = psycopg2.connect(DB_URL)
         try:
             with conn, conn.cursor() as cur:
-                cur.execute("TRUNCATE session_state")
+                cur.execute("TRUNCATE session_state, users")
         finally:
             conn.close()
     yield

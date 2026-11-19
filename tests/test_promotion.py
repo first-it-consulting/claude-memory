@@ -133,7 +133,7 @@ def _sessions():
 
 @pytest.fixture
 def no_dups(monkeypatch):
-    monkeypatch.setattr(d, "find_duplicate", lambda text, thr: None)
+    monkeypatch.setattr(d, "find_duplicate", lambda text, thr, user_id=None: None)
 
 
 def test_dry_run_reports_without_storing(monkeypatch, no_dups):
@@ -172,7 +172,7 @@ def test_global_dry_run_flag_wins(monkeypatch, no_dups):
 def test_known_lines_and_repeats_are_skipped(monkeypatch):
     sessions = _sessions() + [{"session_id": "s4", "project": "mysql-galera", "harness": "qwen", "state": CODEX_STATE}]
     conn, stored = Conn(sessions), []
-    monkeypatch.setattr(d, "find_duplicate", lambda text, thr: 0.97 if "kubeval" in text else None)
+    monkeypatch.setattr(d, "find_duplicate", lambda text, thr, user_id=None: 0.97 if "kubeval" in text else None)
     monkeypatch.setattr(d, "store_memory_direct", lambda c, **k: stored.append(c) or "id")
     d.phase_promote_checkpoints(conn, dry_run=False, mode="on")
     assert not any("kubeval" in c for c in stored)

@@ -86,9 +86,16 @@ def test_get_all_memories_default_limit_and_category_filter(server, settings_ove
 
 
 def test_update_memory_calls_mem0(server, fake_mem):
-    out = call_tool(server, "update_memory", memory_id="abc", content="  new text ")
+    rid = "11111111-1111-1111-1111-111111111111"
+    out = call_tool(server, "update_memory", memory_id=rid, content="  new text ")
     assert "updated" in out
-    assert ("update", "abc", "new text") in fake_mem.calls
+    assert ("update", rid, "new text") in fake_mem.calls
+
+
+def test_update_memory_unknown_id_is_not_written(server, fake_mem):
+    out = call_tool(server, "update_memory", memory_id="does-not-exist", content="x")
+    assert "No memory with id" in out
+    assert not any(c[0] == "update" for c in fake_mem.calls)
 
 
 def test_update_memory_rejects_empty_content(server, fake_mem):

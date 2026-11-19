@@ -9,7 +9,9 @@ import uvicorn
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+import auth
 import memory as mem_store
+import users as users_store
 from config import settings
 from queue_worker import QueueFull, enqueue, queue_depth, run_write
 
@@ -56,9 +58,11 @@ async def add_memory(content: str, agent_id: str = "", infer: bool = False, cate
     if category and category not in mem_store.VALID_CATEGORIES:
         return f"Invalid category '{category}'. Valid: {', '.join(sorted(mem_store.VALID_CATEGORIES - {''}))}"
     # Always queue: an inferred add takes tens of seconds on CPU Ollama and the
-    # caller doesn't need the extraction result.
+    # caller doesn't need the extraction result. The tenant travels with the
+    # job so the async write lands in the caller's workspace.
     try:
-        job_id = await enqueue(content, agent_id, infer, category, tags)
+        job_id = await enqueue(content, agent_id, infer, category, tags,
+                               user_id=auth.get_principal().user_id)
     except QueueFull as e:
         return f"Memory server busy, not stored: {e}. Retry later."
     return json.dumps({"queued": True, "job_id": job_id})
@@ -69,7 +73,8 @@ async def search_memory(query: str, limit: int = 5) -> str:
     """Search memory semantically. Returns top matching facts, one per line:
     [score] date · category · #tags · id=<id> — text
     Use the id with update_memory / delete_memory. Prefer newer facts when two conflict."""
-    results = await _to_thread(mem_store.search, query, limit=limit)
+    results = await _to_thread(mem_store.search, query, limit=limit,
+                               user_id=auth.get_principal().user_id)
     if not results:
         return "No memories found."
     return "\n".join(_format_memory_line(r, with_id=True) for r in results)
@@ -79,7 +84,7 @@ async def search_memory(query: str, limit: int = 5) -> str:
 async def get_all_memories(limit: int = 0, category: str = "") -> str:
     """List stored memories, newest first. Paged to protect your context window:
     default limit is 50 (max 500). Prefer search_memory for lookups."""
-    results = await _to_thread(mem_store.get_all)
+    results = await _to_thread(mem_store.get_all, user_id=auth.get_principal().user_id)
     if not results:
         return "No memories stored."
     if category:
@@ -94,6 +99,19 @@ async def get_all_memories(limit: int = 0, category: str = "") -> str:
     )
 
 
+async def _may_modify(memory_id: str) -> bool:
+    """True if the current principal may modify this memory. Foreign-tenant
+    ids are indistinguishable from missing ones (no existence leak)."""
+    return await _may_modify_api(memory_id, auth.get_principal())
+
+
+async def _may_modify_api(memory_id: str, principal) -> bool:
+    owner = await _to_thread(mem_store.get_owner, memory_id)
+    if owner is None:
+        return False
+    return owner == principal.user_id or principal.is_admin
+
+
 @mcp.tool()
 async def update_memory(memory_id: str, content: str) -> str:
     """Replace the text of an existing memory (ids come from search_memory).
@@ -101,6 +119,8 @@ async def update_memory(memory_id: str, content: str) -> str:
     content = (content or "").strip()
     if not content:
         return "content must not be empty."
+    if not await _may_modify(memory_id):
+        return f"No memory with id {memory_id}."
     result = await run_write(mem_store.update, memory_id, content)
     return json.dumps(result, default=str)
 
@@ -108,6 +128,8 @@ async def update_memory(memory_id: str, content: str) -> str:
 @mcp.tool()
 async def delete_memory(memory_id: str) -> str:
     """Delete a memory by ID."""
+    if not await _may_modify(memory_id):
+        return f"No memory with id {memory_id}."
     result = await run_write(mem_store.delete, memory_id)
     return json.dumps(result)
 
@@ -140,7 +162,10 @@ async def checkpoint(session_id: str, state: str, project: str = "") -> str:
     if len(state) > settings.checkpoint_max_chars:
         return (f"Checkpoint too long ({len(state)} chars, max {settings.checkpoint_max_chars}). "
                 "Condense it — drop finished detail, keep goal, decisions, dead ends, next steps.")
-    row = await _to_thread(mem_store.put_checkpoint, session_id, state, project.strip(), "")
+    row = await _to_thread(mem_store.put_checkpoint, session_id, state, project.strip(), "",
+                           auth.get_principal().user_id)
+    if row is None:
+        return f"session_id {session_id} belongs to another workspace."
     return json.dumps({"ok": True, "session_id": row["session_id"], "updated_at": str(row["updated_at"])})
 
 
@@ -151,10 +176,11 @@ async def get_checkpoint(session_id: str = "", project: str = "") -> str:
     (useful to pick up work started in another session or harness)."""
     session_id = (session_id or "").strip()
     project = (project or "").strip()
+    p = auth.get_principal()
     if session_id:
-        row = await _to_thread(mem_store.get_checkpoint, session_id)
+        row = await _to_thread(mem_store.get_checkpoint, session_id, p.user_id)
     elif project:
-        rows = await _to_thread(mem_store.list_checkpoints, project, "", 1)
+        rows = await _to_thread(mem_store.list_checkpoints, project, "", 1, "", p.user_id)
         row = rows[0] if rows else None
     else:
         return "Pass session_id or project."
@@ -184,15 +210,138 @@ async def _send_response(send, status, headers, body):
     await send({"type": "http.response.body", "body": body})
 
 
-def _check_auth(headers: dict) -> bool:
-    auth = headers.get(b"authorization", b"").decode()
-    # Accept both "Bearer <token>" and plain token formats
-    token = auth.removeprefix("Bearer ").strip()
-    return token == settings.bearer_token
-
-
 def _get_agent_id(headers: dict) -> str:
     return headers.get(b"x-agent-id", b"").decode().strip()
+
+
+def _admin_target(qs: dict, principal) -> tuple:
+    """Which workspace(s) an admin request targets.
+    ("own",) | ("tenant", <id>) | ("all",) — scope params are admin-only and
+    silently ignored for regular users, who always see their own workspace
+    (plus the shared space)."""
+    if principal.is_admin:
+        t = (qs.get("tenant", "") or "").strip()
+        if t:
+            return ("tenant", t)
+        if (qs.get("scope", "") or "").strip() == "all":
+            return ("all",)
+    return ("own",)
+
+
+def _forbidden(send):
+    return _send_response(send, 403, [[b"content-type", b"application/json"]],
+                          json.dumps({"ok": False, "error": "admin only"}).encode())
+
+
+async def _scoped_memories(qs: dict, principal, agent_id: str = "") -> list[dict]:
+    """List memories according to the caller's scope: own workspace + shared,
+    or (admins only) one named tenant or everything."""
+    mode = _admin_target(qs, principal)
+    if mode[0] == "all":
+        return await _to_thread(mem_store.get_all_across, agent_id)
+    if mode[0] == "tenant":
+        return await _to_thread(mem_store.get_all, agent_id, mode[1])
+    return await _to_thread(mem_store.get_all, agent_id, principal.user_id)
+
+
+async def _scoped_search(q: str, limit: int, qs: dict, principal) -> list[dict]:
+    mode = _admin_target(qs, principal)
+    if mode[0] == "all":
+        tenants = await _to_thread(users_store.list_tenant_ids)
+        return await _to_thread(mem_store.search_across, q, limit, tenants)
+    tenant = mode[1] if mode[0] == "tenant" else principal.user_id
+    return await _to_thread(mem_store.search, q, limit=limit, user_id=tenant)
+
+
+async def _users_api(path: str, method: str, send, receive, qs: dict) -> bool:
+    """Admin user management. Returns False when the path is not a user route
+    (caller continues routing). The API token appears in the response exactly
+    once — at creation or rotation; it is stored only as a hash."""
+    if path == "/api/users" and method == "GET":
+        rows = await _to_thread(users_store.list_users)
+        await _send_response(send, *_json_response(rows))
+        return True
+
+    if path == "/api/users" and method == "POST":
+        try:
+            body = json.loads(await _read_body(receive))
+        except Exception:
+            await _send_response(send, 400, [[b"content-type", b"text/plain"]], b"Bad Request")
+            return True
+        user_id = str(body.get("id", "")).strip() or str(body.get("name", "")).strip()
+        try:
+            user, token = await _to_thread(
+                users_store.create_user, user_id,
+                str(body.get("name", "")).strip(),
+                str(body.get("role", "user")).strip() or "user",
+            )
+        except ValueError as e:
+            await _send_response(send, *_json_response({"ok": False, "error": str(e)}, status=400))
+            return True
+        logger.info("audit: created user %s (role=%s)", user["id"], user["role"])
+        await _send_response(send, *_json_response({"ok": True, "user": user, "token": token}, status=201))
+        return True
+
+    if path.startswith("/api/users/"):
+        rest = path[len("/api/users/"):]
+        if "/" in rest:  # sub-resource: POST /api/users/{id}/rotate-token
+            uid, action = rest.split("/", 1)
+            uid = urllib.parse.unquote(uid)
+            if action == "rotate-token" and method == "POST":
+                token = await _to_thread(users_store.rotate_token, uid)
+                if token is None:
+                    await _send_response(send, 404, [[b"content-type", b"text/plain"]], b"Not Found")
+                    return True
+                logger.info("audit: rotated API token for %s", uid)
+                await _send_response(send, *_json_response({"ok": True, "token": token}))
+                return True
+            await _send_response(send, 404, [[b"content-type", b"text/plain"]], b"Not Found")
+            return True
+
+        uid = urllib.parse.unquote(rest)
+        if method == "GET":
+            user = await _to_thread(users_store.get_user, uid)
+            if user is None:
+                await _send_response(send, 404, [[b"content-type", b"text/plain"]], b"Not Found")
+                return True
+            await _send_response(send, *_json_response(user))
+            return True
+        if method == "PATCH":
+            try:
+                body = json.loads(await _read_body(receive))
+            except Exception:
+                await _send_response(send, 400, [[b"content-type", b"text/plain"]], b"Bad Request")
+                return True
+            kw = {}
+            for key in ("name", "role"):
+                if key in body:
+                    kw[key] = str(body[key])
+            if "disabled" in body:
+                kw["disabled"] = bool(body["disabled"])
+            try:
+                user = await _to_thread(users_store.update_user, uid, **kw)
+            except ValueError as e:
+                await _send_response(send, *_json_response({"ok": False, "error": str(e)}, status=400))
+                return True
+            if user is None:
+                await _send_response(send, 404, [[b"content-type", b"text/plain"]], b"Not Found")
+                return True
+            logger.info("audit: updated user %s %s", uid, sorted(kw))
+            await _send_response(send, *_json_response({"ok": True, "user": user}))
+            return True
+        if method == "DELETE":
+            try:
+                deleted = await _to_thread(users_store.delete_user, uid)
+            except ValueError as e:
+                await _send_response(send, *_json_response({"ok": False, "error": str(e)}, status=400))
+                return True
+            if not deleted:
+                await _send_response(send, 404, [[b"content-type", b"text/plain"]], b"Not Found")
+                return True
+            logger.info("audit: deleted user %s (memories kept in its namespace)", uid)
+            await _send_response(send, *_json_response({"ok": True}))
+            return True
+    return False
 
 
 def _parse_qs(qs: str) -> dict:
@@ -303,6 +452,7 @@ def _memory_dict(r: dict) -> dict:
         "id": r.get("id", ""),
         "memory": r.get("memory", r.get("text", "")),
         "agent_id": r.get("agent_id", ""),
+        "tenant": r.get("user_id", ""),  # owning workspace (shared space = settings.shared_tenant_id)
         "category": meta.get("category", ""),
         "tags": meta.get("tags") or [],
         "created_at": r.get("created_at", ""),
@@ -370,15 +520,17 @@ def _format_checkpoint(row: dict, title: str) -> str:
     return "\n".join(out)
 
 
-async def _search_for_hook(query: str, limit: int, min_score: float) -> list[dict]:
+async def _search_for_hook(query: str, limit: int, min_score: float,
+                           user_id: str = "") -> list[dict]:
     """Semantic search with a hard deadline: a slow Ollama must never stall a
-    harness hook. Returns [] on timeout or error."""
+    harness hook. Returns [] on timeout or error. Scoped to the caller's
+    workspace (plus the shared space)."""
     query = (query or "").strip()[:1000]
     if not query:
         return []
     try:
         results = await asyncio.wait_for(
-            _to_thread(mem_store.search, query, limit=max(limit * 3, 10)),
+            _to_thread(mem_store.search, query, limit=max(limit * 3, 10), user_id=user_id),
             timeout=settings.hook_search_timeout,
         )
     except Exception as e:
@@ -410,7 +562,8 @@ def _truncate(text: str, limit: int) -> str:
     return text[: limit - 40].rstrip() + "\n… [truncated by claude-memory]"
 
 
-async def _build_briefing(session_id: str, project: str, source: str, harness: str, tool: str) -> str:
+async def _build_briefing(session_id: str, project: str, source: str, harness: str, tool: str,
+                          principal) -> str:
     source = source or "startup"
     tool = tool or "checkpoint"
     lines = ["## Memory briefing (claude-memory)"]
@@ -425,30 +578,32 @@ async def _build_briefing(session_id: str, project: str, source: str, harness: s
         lines.append("Context was just compacted. The checkpoint below is your authoritative "
                      "working state — trust it over the compaction summary where they differ.")
 
+    tenant = principal.user_id
     if session_id and (project or harness):
         # Record project/harness now, so a later MCP `checkpoint` (which knows
         # neither) still belongs to this project for the next session's
         # "Last session on <project>" briefing. Never fatal.
         try:
-            await _to_thread(mem_store.register_session, session_id, project, harness)
+            await _to_thread(mem_store.register_session, session_id, project, harness, tenant)
         except Exception as e:
             logger.warning("register_session failed: %s", type(e).__name__)
 
-    current = await _to_thread(mem_store.get_checkpoint, session_id) if session_id else None
+    current = await _to_thread(mem_store.get_checkpoint, session_id, tenant) if session_id else None
     query = ""
     if current and (current.get("state") or current.get("auto_notes")):
         lines.append("")
         lines.append(_format_checkpoint(current, "Current session checkpoint"))
         query = current.get("state") or current.get("auto_notes") or ""
     elif project:
-        previous = await _to_thread(mem_store.list_checkpoints, project, session_id, 1)
+        previous = await _to_thread(mem_store.list_checkpoints, project, session_id, 1, "", tenant)
         if previous:
             lines.append("")
             lines.append(_format_checkpoint(previous[0], f"Last session on {project}"))
             lines.append("(From an earlier session — only continue it if the user's request matches.)")
             query = previous[0].get("state") or ""
 
-    hits = await _search_for_hook(query[:600] or project, limit=5, min_score=settings.recall_min_score)
+    hits = await _search_for_hook(query[:600] or project, limit=5, min_score=settings.recall_min_score,
+                                  user_id=tenant)
     if hits:
         lines.append("")
         lines.append("### Relevant long-term memories (shortened; full text: search_memory)")
@@ -457,11 +612,11 @@ async def _build_briefing(session_id: str, project: str, source: str, harness: s
     return _truncate("\n".join(lines), settings.briefing_max_chars)
 
 
-async def _build_recall(prompt: str, limit: int, min_score: float) -> str:
+async def _build_recall(prompt: str, limit: int, min_score: float, user_id: str = "") -> str:
     prompt = (prompt or "").strip()
     if len(prompt) < settings.recall_min_prompt_chars:
         return ""
-    hits = await _search_for_hook(prompt, limit=limit, min_score=min_score)
+    hits = await _search_for_hook(prompt, limit=limit, min_score=min_score, user_id=user_id)
     if not hits:
         return ""
     return "### Possibly relevant memories (claude-memory, shortened; full text: search_memory)\n" + "\n".join(
@@ -487,10 +642,11 @@ _metrics_cache: dict = {"time": 0.0, "data": None}
 
 
 async def _get_all_cached() -> list[dict]:
-    """Full scan for /metrics, cached so every Prometheus scrape isn't a table scan."""
+    """Full scan for /metrics, cached so every Prometheus scrape isn't a table
+    scan. /metrics stays cross-tenant (aggregate counts only, no content)."""
     now = time.monotonic()
     if _metrics_cache["data"] is None or now - _metrics_cache["time"] > settings.metrics_cache_seconds:
-        _metrics_cache["data"] = await _to_thread(mem_store.get_all)
+        _metrics_cache["data"] = await _to_thread(mem_store.get_all_across)
         _metrics_cache["time"] = now
     return _metrics_cache["data"]
 
@@ -585,14 +741,35 @@ async def app(scope, receive, send):
         await _send_response(send, 200, [[b"content-type", b"text/plain; version=0.0.4"]], body)
         return
 
-    # All /api/* routes require bearer auth
+    # All /api/* routes require bearer auth (API token, Keycloak JWT, admin or
+    # legacy token — see auth.resolve). The principal scopes every handler.
     if path.startswith("/api/"):
-        if not _check_auth(headers):
+        principal = auth.principal_from_asgi_headers(headers)
+        if principal is None:
             await _send_response(send, 401, [[b"content-type", b"text/plain"]], b"Unauthorized")
             return
+        auth.set_principal(principal)
 
         agent_id = _get_agent_id(headers)
         qs = _parse_qs(scope.get("query_string", b"").decode())
+
+        # ---- Auth / users ---------------------------------------------------
+
+        # GET /api/auth/whoami — who does this token belong to?
+        if path == "/api/auth/whoami" and method == "GET":
+            await _send_response(send, *_json_response({
+                "user_id": principal.user_id, "role": principal.role, "via": principal.via,
+                "label": principal.label, "shared_tenant": settings.shared_tenant_id,
+            }))
+            return
+
+        if path.startswith("/api/users"):
+            if not principal.is_admin:
+                await _forbidden(send)
+                return
+            handled = await _users_api(path, method, send, receive, qs)
+            if handled:
+                return
 
         # ---- Harness hook endpoints -------------------------------------
         # Return {"context": "<text ready to inject>"}; adapters wrap it in
@@ -608,6 +785,7 @@ async def app(scope, receive, send):
                     qs.get("source", "startup").strip(),
                     qs.get("harness", "").strip() or agent_id,
                     qs.get("tool", "").strip(),
+                    principal,
                 )
             except Exception:
                 logger.exception("briefing failed")
@@ -622,6 +800,7 @@ async def app(scope, receive, send):
                 qs.get("q", ""),
                 max(1, min(_int(qs.get("limit"), settings.recall_limit), 10)),
                 _float(qs.get("min_score"), settings.recall_min_score),
+                principal.user_id,
             )
             await _send_response(send, *_json_response({"context": context}))
             return
@@ -639,21 +818,28 @@ async def app(scope, receive, send):
                 await _send_response(send, *_json_response({"ok": False, "error": "session_id and notes required"}, status=400))
                 return
             notes = _truncate(notes, settings.auto_notes_max_chars)
-            await _to_thread(
+            row = await _to_thread(
                 mem_store.put_auto_notes, session_id, notes,
                 str(body_data.get("project", "")).strip(),
                 str(body_data.get("harness", "")).strip() or agent_id,
+                principal.user_id,
             )
+            if row is None:
+                await _send_response(send, *_json_response(
+                    {"ok": False, "error": "session belongs to another workspace"}, status=404))
+                return
             await _send_response(send, *_json_response({"ok": True}))
             return
 
         # ---- Session checkpoints -----------------------------------------
 
-        # GET /api/sessions?project=&harness=&limit=
+        # GET /api/sessions?project=&harness=&limit=  (admin: ?scope=all|?tenant=)
         if path == "/api/sessions" and method == "GET":
+            mode = _admin_target(qs, principal)
+            owner = None if mode[0] == "all" else (mode[1] if mode[0] == "tenant" else principal.user_id)
             rows = await _to_thread(
                 mem_store.list_checkpoints, qs.get("project", "").strip(), "",
-                _int(qs.get("limit"), 20), qs.get("harness", "").strip(),
+                _int(qs.get("limit"), 20), qs.get("harness", "").strip(), owner,
             )
             await _send_response(send, *_json_response(rows))
             return
@@ -666,7 +852,12 @@ async def app(scope, receive, send):
 
             # GET /api/sessions/{id}
             if method == "GET":
-                row = await _to_thread(mem_store.get_checkpoint, session_id)
+                mode = _admin_target(qs, principal)
+                # Reads may cross tenants only for admins ("all"); ?tenant=
+                # restricts to that one workspace.
+                owner = None if mode[0] == "all" else (
+                    mode[1] if mode[0] == "tenant" else principal.user_id)
+                row = await _to_thread(mem_store.get_checkpoint, session_id, owner)
                 if row is None:
                     await _send_response(send, 404, [[b"content-type", b"text/plain"]], b"Not Found")
                     return
@@ -690,26 +881,38 @@ async def app(scope, receive, send):
                         "error": f"state too long ({len(state)} chars, max {settings.checkpoint_max_chars}); condense it",
                     }, status=413))
                     return
+                mode = _admin_target(qs, principal)
+                # Writes always land in the caller's workspace unless an admin
+                # names one explicitly with ?tenant=.
+                owner = mode[1] if mode[0] == "tenant" else principal.user_id
                 row = await _to_thread(
                     mem_store.put_checkpoint, session_id, state,
                     str(body_data.get("project", "")).strip(),
                     str(body_data.get("harness", "")).strip() or agent_id,
+                    owner,
                 )
+                if row is None:
+                    await _send_response(send, *_json_response(
+                        {"ok": False, "error": "session belongs to another workspace"}, status=404))
+                    return
                 await _send_response(send, *_json_response({"ok": True, **row}))
                 return
 
             # DELETE /api/sessions/{id}
             if method == "DELETE":
-                deleted = await _to_thread(mem_store.delete_checkpoint, session_id)
+                mode = _admin_target(qs, principal)
+                owner = None if mode[0] == "all" else (
+                    mode[1] if mode[0] == "tenant" else principal.user_id)
+                deleted = await _to_thread(mem_store.delete_checkpoint, session_id, owner)
                 if not deleted:
                     await _send_response(send, 404, [[b"content-type", b"text/plain"]], b"Not Found")
                     return
                 await _send_response(send, *_json_response({"ok": True, "session_id": session_id}))
                 return
 
-        # GET /api/stats
+        # GET /api/stats  (admin: ?scope=all|?tenant=)
         if path == "/api/stats" and method == "GET":
-            all_memories = await _to_thread(mem_store.get_all)
+            all_memories = await _scoped_memories(qs, principal)
             total = len(all_memories)
             dates = [r.get("created_at", "") for r in all_memories if r.get("created_at")]
             dates_sorted = sorted(dates)
@@ -746,8 +949,11 @@ async def app(scope, receive, send):
             await _send_response(send, *_json_response(list(grouped.values())))
             return
 
-        # POST /api/tag-rules
+        # POST /api/tag-rules (admin — rules apply to every tenant)
         if path == "/api/tag-rules" and method == "POST":
+            if not principal.is_admin:
+                await _forbidden(send)
+                return
             raw = await _read_body(receive)
             try:
                 body_data = json.loads(raw)
@@ -763,8 +969,11 @@ async def app(scope, receive, send):
             await _send_response(send, *_json_response({"ok": ok}))
             return
 
-        # DELETE /api/tag-rules/{tag}/{keyword}
+        # DELETE /api/tag-rules/{tag}/{keyword} (admin)
         if path.startswith("/api/tag-rules/") and method == "DELETE":
+            if not principal.is_admin:
+                await _forbidden(send)
+                return
             rest = path[len("/api/tag-rules/"):]
             if "/" in rest:
                 tag_part, kw_part = rest.split("/", 1)
@@ -776,14 +985,21 @@ async def app(scope, receive, send):
                 await _send_response(send, *_json_response({"ok": ok}))
                 return
 
-        # GET /api/jobs
+        # GET /api/jobs (admin — the per-phase reports quote memory text from
+        # every tenant, so they are not shown to regular users)
         if path == "/api/jobs" and method == "GET":
+            if not principal.is_admin:
+                await _forbidden(send)
+                return
             jobs = await _to_thread(mem_store.list_job_runs)
             await _send_response(send, *_json_response(jobs))
             return
 
-        # GET /api/jobs/{id}
+        # GET /api/jobs/{id} (admin)
         if path.startswith("/api/jobs/") and method == "GET":
+            if not principal.is_admin:
+                await _forbidden(send)
+                return
             run_id = path[len("/api/jobs/"):]
             job = await _to_thread(mem_store.get_job_run, run_id)
             if job is None:
@@ -792,9 +1008,10 @@ async def app(scope, receive, send):
             await _send_response(send, *_json_response(job))
             return
 
-        # GET /api/memories/export — download all memories as JSON
+        # GET /api/memories/export — download memories as JSON
+        # (own workspace + shared; admins may pass ?scope=all or ?tenant=)
         if path == "/api/memories/export" and method == "GET":
-            all_memories = await _to_thread(mem_store.get_all)
+            all_memories = await _scoped_memories(qs, principal)
             body = json.dumps([_memory_dict(r) for r in all_memories], default=str, indent=2).encode()
             await _send_response(send, 200, [
                 [b"content-type", b"application/json"],
@@ -818,7 +1035,8 @@ async def app(scope, receive, send):
                     content = item.get("memory") or item.get("text") or item.get("content", "")
                     src_agent = item.get("agent_id", "") or agent_id
                     if content.strip():
-                        await enqueue(content.strip(), src_agent, True, "", [])
+                        await enqueue(content.strip(), src_agent, True, "", [],
+                                      user_id=principal.user_id)
                         imported += 1
             except QueueFull as e:
                 await _send_response(send, *_json_response(
@@ -836,12 +1054,12 @@ async def app(scope, receive, send):
             filter_tag = qs.get("tag", "").strip().lower()
 
             if q:
-                results = await _to_thread(mem_store.search, q, limit=200)
+                results = await _scoped_search(q, 200, qs, principal)
                 if sort in ("newest", "oldest"):
                     reverse = sort == "newest"
                     results.sort(key=lambda r: r.get("created_at", ""), reverse=reverse)
             else:
-                results = await _to_thread(mem_store.get_all, agent_id=filter_agent)
+                results = await _scoped_memories(qs, principal, agent_id=filter_agent)
                 reverse = sort != "oldest"
                 results.sort(key=lambda r: r.get("created_at", ""), reverse=reverse)
 
@@ -853,28 +1071,38 @@ async def app(scope, receive, send):
             await _send_response(send, *_json_response([_memory_dict(r) for r in results]))
             return
 
-        # POST /api/memories — add a memory
+        # POST /api/memories — add a memory. {"shared": true} (admin only)
+        # publishes into the shared space every tenant can read.
         if path == "/api/memories" and method == "POST":
             raw = await _read_body(receive)
+            shared = False
             # Support both form-encoded and JSON body
             try:
                 body_data = json.loads(raw)
                 content = body_data.get("content", "").strip()
                 src_agent = body_data.get("agent_id", "") or agent_id
+                shared = bool(body_data.get("shared", False))
             except Exception:
                 params = dict(p.split("=", 1) for p in raw.decode().split("&") if "=" in p)
                 content = urllib.parse.unquote_plus(params.get("content", "")).strip()
                 src_agent = agent_id
+            target = principal.user_id
+            if shared:
+                if not principal.is_admin:
+                    await _forbidden(send)
+                    return
+                target = settings.shared_tenant_id
             if content:
                 try:
-                    await enqueue(content, src_agent, True, "", [])
+                    await enqueue(content, src_agent, True, "", [], user_id=target)
                 except QueueFull as e:
                     await _send_response(send, *_json_response({"ok": False, "error": str(e)}, status=503))
                     return
             await _send_response(send, *_json_response({"ok": True, "queued": bool(content)}))
             return
 
-        # Routes with memory ID suffix
+        # Routes with memory ID suffix — all ownership-checked: another
+        # tenant's ids behave exactly like missing ones (404).
         if path.startswith("/api/memories/"):
             memory_id = path[len("/api/memories/"):]
 
@@ -887,6 +1115,9 @@ async def app(scope, receive, send):
                 except Exception:
                     params = dict(p.split("=", 1) for p in raw.decode().split("&") if "=" in p)
                     content = urllib.parse.unquote_plus(params.get("content", "")).strip()
+                if not await _may_modify_api(memory_id, principal):
+                    await _send_response(send, 404, [[b"content-type", b"text/plain"]], b"Not Found")
+                    return
                 if content:
                     await run_write(mem_store.update, memory_id, content)
                 await _send_response(send, *_json_response({"ok": True}))
@@ -904,12 +1135,16 @@ async def app(scope, receive, send):
                 except Exception:
                     await _send_response(send, 400, [[b"content-type", b"text/plain"]], b"Bad Request")
                     return
-                ok = await _to_thread(mem_store.update_tags, real_id, tags)
+                ok = await _to_thread(
+                    mem_store.update_tags, real_id, tags, principal.user_id, principal.is_admin)
                 await _send_response(send, *_json_response({"ok": ok}))
                 return
 
             # DELETE /api/memories/{id}
             if method == "DELETE":
+                if not await _may_modify_api(memory_id, principal):
+                    await _send_response(send, 404, [[b"content-type", b"text/plain"]], b"Not Found")
+                    return
                 await run_write(mem_store.delete, memory_id)
                 await _send_response(send, *_json_response({"ok": True}))
                 return
@@ -917,10 +1152,14 @@ async def app(scope, receive, send):
         await _send_response(send, 404, [[b"content-type", b"text/plain"]], b"Not Found")
         return
 
-    # /mcp — MCP protocol (bearer auth required)
-    if not _check_auth(headers):
+    # /mcp — MCP protocol (bearer auth required). The principal resolved here
+    # is carried through the handler via a contextvar, so every tool call —
+    # including those handed to worker threads — runs in the caller's tenant.
+    mcp_principal = auth.principal_from_asgi_headers(headers)
+    if mcp_principal is None:
         await _send_response(send, 401, [[b"content-type", b"text/plain"]], b"Unauthorized")
         return
+    auth.set_principal(mcp_principal)
 
     # Read body once so we can inspect method and replay it to the handler
     raw = await _read_body(receive)

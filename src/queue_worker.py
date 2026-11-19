@@ -76,7 +76,8 @@ async def queue_depth() -> int:
     return _get_local_queue().qsize()
 
 
-async def enqueue(content: str, agent_id: str, infer: bool, category: str, tags: list) -> str:
+async def enqueue(content: str, agent_id: str, infer: bool, category: str, tags: list,
+                  user_id: str = "") -> str:
     job_id = str(uuid.uuid4())
     job = {
         "job_id": job_id,
@@ -85,6 +86,9 @@ async def enqueue(content: str, agent_id: str, infer: bool, category: str, tags:
         "infer": infer,
         "category": category,
         "tags": tags,
+        # Tenant the memory belongs to; carried through the queue so an async
+        # write lands in the caller's workspace, not the server default.
+        "user_id": user_id or "",
     }
     if settings.redis_url:
         client = await _get_client()
@@ -126,6 +130,7 @@ async def _run_worker():
             result = await run_write(
                 mem_store.add,
                 job["content"],
+                user_id=job.get("user_id") or None,
                 agent_id=job.get("agent_id", ""),
                 infer=job.get("infer", True),
                 category=job.get("category", ""),

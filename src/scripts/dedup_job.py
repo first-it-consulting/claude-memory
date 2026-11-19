@@ -340,13 +340,16 @@ def phase1_hash_dedup(conn, dry_run: bool) -> int:
             ensure_archive_table(cur)
             ensure_job_runs_table(cur)
 
+            # Dedup per tenant: identical texts in two workspaces are two
+            # legitimate memories, not duplicates of each other.
             cur.execute(f"""
                 SELECT payload->>'hash' AS hash,
+                       payload->>'user_id' AS uid,
                        array_agg(id ORDER BY (payload->>'created_at') ASC) AS ids
                 FROM {MEM_TABLE}
                 WHERE payload->>'hash' IS NOT NULL
                   AND payload->>'hash' != ''
-                GROUP BY payload->>'hash'
+                GROUP BY payload->>'hash', payload->>'user_id'
                 HAVING COUNT(*) > 1
             """)
             clusters = cur.fetchall()
@@ -383,6 +386,8 @@ def find_semantic_clusters(
 ) -> list[list[uuid.UUID]]:
     cosine_distance = 1.0 - threshold
 
+    # Only within a tenant: a merge would move the result into one workspace
+    # and silently strip it from the other.
     cur.execute(
         f"""
         SELECT a.id AS id_a, b.id AS id_b,
@@ -390,6 +395,7 @@ def find_semantic_clusters(
         FROM {MEM_TABLE} a
         JOIN {MEM_TABLE} b ON a.id < b.id
         WHERE (a.vector <=> b.vector) < %s
+          AND COALESCE(a.payload->>'user_id','default') = COALESCE(b.payload->>'user_id','default')
         ORDER BY similarity DESC
         """,
         (cosine_distance,),
@@ -515,7 +521,8 @@ def delete_memory_direct(memory_id: str) -> None:
 
 def store_memory_direct(content: str, agent_id: str = "", category: str = "",
                         tags: Optional[list] = None,
-                        extra_metadata: Optional[dict] = None) -> Optional[str]:
+                        extra_metadata: Optional[dict] = None,
+                        user_id: Optional[str] = None) -> Optional[str]:
     """Store the merged memory verbatim, in-process (the job runs in the server
     image and gets the server's env). Returns the new id, or None — callers must
     then keep the originals. (The old MCP-over-HTTP call could not parse the
@@ -526,7 +533,7 @@ def store_memory_direct(content: str, agent_id: str = "", category: str = "",
             sys.path.insert(0, src)
         import memory as mstore  # server module
 
-        result = mstore.add(content, agent_id=agent_id, infer=False,
+        result = mstore.add(content, user_id=user_id, agent_id=agent_id, infer=False,
                             category=category, tags=tags or [],
                             extra_metadata=extra_metadata)
         results = (result or {}).get("results") or []
@@ -595,8 +602,12 @@ def phase2_semantic_dedup(conn, threshold: float, dry_run: bool) -> int:
                     continue
 
                 log.info("  → merged: %s", merged_text[:120])
+                # Clusters never span tenants (see find_semantic_clusters), so
+                # the merged memory stays in the cluster's workspace.
+                cluster_user = rows[0]["payload"].get("user_id")
                 new_id = store_memory_direct(merged_text, agent_id=agent,
-                                             category=cluster_category, tags=tags)
+                                             category=cluster_category, tags=tags,
+                                             user_id=cluster_user)
                 if not new_id:
                     log.warning("Storing merged memory failed — keeping originals")
                     continue
@@ -637,10 +648,11 @@ def _mstore():
     return mstore
 
 
-def find_duplicate(text: str, threshold: float) -> Optional[float]:
+def find_duplicate(text: str, threshold: float, user_id: Optional[str] = None) -> Optional[float]:
     """Best similarity of an existing memory to `text` if >= threshold, else None.
-    Raises when the search itself fails, so nothing is promoted blind."""
-    hits = _mstore().search(text, limit=3) or []
+    Raises when the search itself fails, so nothing is promoted blind.
+    Searches the owning tenant (plus the shared space), never other tenants."""
+    hits = _mstore().search(text, limit=3, user_id=user_id) or []
     best = max((h.get("score") or 0.0 for h in hits), default=0.0)
     return best if best >= threshold else None
 
@@ -651,7 +663,7 @@ def promotable_sessions(conn, idle_hours: float) -> list[dict]:
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
         cur.execute("ALTER TABLE session_state ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMPTZ")
         cur.execute(
-            """SELECT session_id, project, harness, state, updated_at
+            """SELECT session_id, owner, project, harness, state, updated_at
                FROM session_state
                WHERE state <> ''
                  AND updated_at < now() - make_interval(secs => %s)
@@ -685,14 +697,15 @@ def phase_promote_checkpoints(conn, dry_run: bool, mode: str = PROMOTE_MODE,
                 if not dry:
                     _mark_promoted(conn, s["session_id"])
                 continue
-            report.append(f"## {s['project'] or '-'} · {s['harness'] or '-'} · session {s['session_id']}")
+            owner = s.get("owner") or "default"  # promoted lines land in the session's workspace
+            report.append(f"## {s['project'] or '-'} · {s['harness'] or '-'} · session {s['session_id']} ({owner})")
             for c in kept:
-                key = c["text"].lower()
+                key = (owner, c["text"].lower())
                 if key in seen:
                     report.append(f"  skip (same line in another session): {c['content']}")
                     continue
                 seen.add(key)
-                dup = find_duplicate(c["content"], threshold) or find_duplicate(c["text"], threshold)
+                dup = find_duplicate(c["content"], threshold, owner) or find_duplicate(c["text"], threshold, owner)
                 if dup is not None:
                     report.append(f"  skip (already known, {dup:.2f}): {c['content']}")
                     continue
@@ -702,7 +715,8 @@ def phase_promote_checkpoints(conn, dry_run: bool, mode: str = PROMOTE_MODE,
                     continue
                 new_id = store_memory_direct(
                     c["content"], agent_id=s["harness"] or "", category="project", tags=c["tags"],
-                    extra_metadata={"source": "checkpoint", "session_id": s["session_id"]})
+                    extra_metadata={"source": "checkpoint", "session_id": s["session_id"]},
+                    user_id=owner)
                 if not new_id:
                     raise RuntimeError(f"storing failed: {c['content'][:80]}")
                 report.append(f"  promoted: {c['content']}")
