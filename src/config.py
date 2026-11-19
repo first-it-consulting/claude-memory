@@ -54,5 +54,22 @@ class Settings(BaseSettings):
     # instead of dropping it. Duplicates are merged by the nightly dedup job.
     add_raw_fallback: bool = True
 
+    # --- Multi-tenancy -----------------------------------------------------
+    # A tenant == a workspace == the mem0 user_id namespace. Every user has one
+    # tenant (users.id); the nightly job, hooks and the API always operate
+    # inside the caller's tenant. See auth.py / users.py.
+    shared_tenant_id: str = "global"  # pseudo-tenant: memories visible to everyone
+    admin_token: str = ""             # bootstrap admin API token (role admin, tenant "default")
+
+    # Keycloak OIDC — browser (UI) login. Enabled when oidc_issuer is set.
+    # The UI sends a Keycloak access token as Authorization header; the server
+    # verifies it (JWKS, iss, aud, exp) and maps it to a users row by `sub`.
+    oidc_issuer: str = ""
+    oidc_client_id: str = "claude-memory-ui"
+    oidc_audience: str = ""            # empty -> oidc_client_id
+    oidc_admin_roles: str = "claude-memory-admin"  # comma-separated realm/client roles
+    oidc_admin_usernames: str = ""     # comma-separated preferred_username fallback
+    oidc_auto_create: bool = True      # first OIDC login creates a role=user account
+
 
 settings = Settings()
