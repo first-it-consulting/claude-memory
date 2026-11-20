@@ -289,6 +289,10 @@ def update_user(user_id: str, name: Optional[str] = None, role: Optional[str] = 
         return get_user(user_id)
     params.append(user_id)
     ensure_table()
+    disabling = bool(disabled)
+    if disabling:
+        import tokens
+        tokens.ensure_table()  # make sure api_tokens exists before revoking in-txn
     conn = _db_conn()
     try:
         with conn:
@@ -298,25 +302,46 @@ def update_user(user_id: str, name: Optional[str] = None, role: Optional[str] = 
                     params,
                 )
                 row = cur.fetchone()
+                if disabling:
+                    # Disabling a user revokes their PATs in the same
+                    # transaction — no window where a disabled user's token
+                    # still authenticates.
+                    cur.execute(
+                        "UPDATE api_tokens SET revoked_at = now(), revoked_by = %s "
+                        "WHERE user_id = %s AND revoked_at IS NULL",
+                        ("user-disabled", user_id),
+                    )
                 return _row_to_user(row) if row else None
     finally:
         conn.close()
 
 
 def rotate_token(user_id: str) -> Optional[str]:
-    """Replace the API token. Returns the new plaintext token (shown once)."""
+    """Replace the API token. Returns the new plaintext token (shown once).
+    Any imported api_tokens row for the OLD hash is marked revoked in the same
+    transaction so it never lingers as 'active' for a dead secret."""
     token = generate_token()
     ensure_table()
+    import tokens
+    tokens.ensure_table()
     conn = _db_conn()
     try:
         with conn:
             with conn.cursor() as cur:
+                cur.execute("SELECT token_hash FROM users WHERE id = %s", (user_id,))
+                old = cur.fetchone()
                 cur.execute(
                     "UPDATE users SET token_hash = %s WHERE id = %s",
                     (hash_token(token), user_id),
                 )
                 if cur.rowcount == 0:
                     return None
+                if old and old[0]:
+                    cur.execute(
+                        "UPDATE api_tokens SET revoked_at = now(), revoked_by = %s "
+                        "WHERE token_hash = %s AND revoked_at IS NULL",
+                        ("rotated", old[0]),
+                    )
                 return token
     finally:
         conn.close()
