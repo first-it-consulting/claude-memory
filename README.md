@@ -69,7 +69,7 @@ All settings come from environment variables (`.env` file is auto-loaded). See `
 
 | Variable | Default | Description |
 |---|---|---|
-| `BEARER_TOKEN` | `change-me` | **Legacy** shared secret for `/api/*` and `/mcp` (tenant `default`). Superseded by per-user API tokens; it is registered as the revocable token `legacy-hooks` so it can be switched off. Send as `Authorization: Bearer <token>`. |
+| `BEARER_TOKEN` | *(empty)* | **Legacy** shared secret for `/api/*` and `/mcp` (tenant `default`). Empty (the default) disables this auth path. Superseded by per-user API tokens; it is registered as the revocable token `legacy-hooks` so it can be switched off. Send as `Authorization: Bearer <token>`. |
 | `DATABASE_URL` | `postgresql://mem0:mem0@localhost:5432/mem0` | PostgreSQL connection string for the pgvector store. |
 | `ANTHROPIC_API_KEY` | *(empty)* | Optional: let mem0 use Anthropic for inference instead of Ollama. |
 | `MEM0_USER_ID` | `default` | mem0 user id used as a filter namespace. |
