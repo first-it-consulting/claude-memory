@@ -1,5 +1,11 @@
 FROM python:3.15-slim
 
+# Refresh Debian packages: the slim base digest can lag security uploads
+# (e.g. zlib1g CVEs); keeps the Trivy CRITICAL gate meaningful.
+RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN useradd -m -u 1000 appuser
 
 WORKDIR /app
