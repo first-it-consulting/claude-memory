@@ -476,7 +476,9 @@ def _strip_preamble(text: str) -> str:
     ):
         lines = lines[1:]
     # drop the model's own remarks, e.g. "- (no specific date mentioned in both memories)"
-    lines = [l for l in lines if not re.fullmatch(r"\s*(?:[-*]\s*)?\([^()]*\)\s*", l)]
+    lines = [
+        ln for ln in lines if not re.fullmatch(r"\s*(?:[-*]\s*)?\([^()]*\)\s*", ln)
+    ]
     return "\n".join(lines).strip()
 
 

@@ -119,10 +119,10 @@ def test_extract_limits_turn_count_and_length(hook, tmp_path):
     path = tmp_path / "t.jsonl"
     path.write_text("\n".join(json.dumps(r) for r in rows))
     out = hook.extract_recent_turns(str(path))
-    user_lines = [l for l in out.splitlines() if l.startswith("- ")]
+    user_lines = [ln for ln in out.splitlines() if ln.startswith("- ")]
     assert len(user_lines) == hook.MAX_USER_TURNS
     assert user_lines[0].startswith("- request 12 ")  # last 8 of 20
-    assert all(len(l) <= 302 for l in user_lines)
+    assert all(len(ln) <= 302 for ln in user_lines)
     assert "> answer with newline" in out
 
 
@@ -266,7 +266,7 @@ def test_transcript_skips_request_blobs_tool_results_and_summaries(hook, tmp_pat
     path = tmp_path / "t.jsonl"
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     notes = hook.extract_recent_turns(str(path))
-    users = [l for l in notes.splitlines() if l.startswith("- ")]
+    users = [ln for ln in notes.splitlines() if ln.startswith("- ")]
     # mentions of claude-memory are real requests; repeats collapse to the latest position
     assert users == [
         "- second request",

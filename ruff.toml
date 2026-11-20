@@ -1,2 +1,7 @@
 # Oldest supported runtime is Python 3.13 (CI matrix); image runs 3.15.
 target-version = "py313"
+
+[lint]
+# ruff format owns line breaking; E501 would fight it over the strings/comments
+# the formatter deliberately leaves unwrapped (ruff docs: do not pair them).
+ignore = ["E501"]

@@ -185,7 +185,7 @@ def test_recall_hits_are_condensed(api, fake_mem, settings_override):
         "/api/hooks/recall", q="how do cnpg backups work on prod-k8s?"
     ).json()["context"]
     assert "full text: search_memory" in ctx
-    assert all(len(l) < 220 for l in ctx.splitlines())
+    assert all(len(ln) < 220 for ln in ctx.splitlines())
 
 
 def test_briefing_registers_project_for_later_mcp_checkpoint(api):
@@ -221,7 +221,7 @@ def test_auto_promoted_memories_rank_lower_and_filter_by_tag(api, fake_mem):
     ctx = api.get(
         "/api/hooks/recall", q="why was kubeval removed from ci ssl errors?"
     ).json()["context"]
-    lines = [l for l in ctx.splitlines() if "kubeval" in l]
+    lines = [ln for ln in ctx.splitlines() if "kubeval" in ln]
     assert "#ci" in lines[0] and "auto-promoted" in lines[1]
     ids = [m["id"] for m in api.get("/api/memories", tag="auto-promoted").json()]
     assert ids == ["promo"]
