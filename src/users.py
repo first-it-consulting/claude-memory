@@ -289,6 +289,10 @@ def update_user(user_id: str, name: Optional[str] = None, role: Optional[str] = 
         return get_user(user_id)
     params.append(user_id)
     ensure_table()
+    disabling = bool(disabled)
+    if disabling:
+        import tokens
+        tokens.ensure_table()  # make sure api_tokens exists before revoking in-txn
     conn = _db_conn()
     try:
         with conn:
@@ -298,6 +302,15 @@ def update_user(user_id: str, name: Optional[str] = None, role: Optional[str] = 
                     params,
                 )
                 row = cur.fetchone()
+                if disabling:
+                    # Disabling a user revokes their PATs in the same
+                    # transaction — no window where a disabled user's token
+                    # still authenticates.
+                    cur.execute(
+                        "UPDATE api_tokens SET revoked_at = now(), revoked_by = %s "
+                        "WHERE user_id = %s AND revoked_at IS NULL",
+                        ("user-disabled", user_id),
+                    )
                 return _row_to_user(row) if row else None
     finally:
         conn.close()

@@ -235,6 +235,92 @@ def _forbidden(send):
                           json.dumps({"ok": False, "error": "admin only"}).encode())
 
 
+# ---------------------------------------------------------------------------
+# Failed-auth rate limiting (per IP, generous: hook fleets retry, a tight
+# limit is a self-inflicted outage). In-process and approximate — a single
+# homelab worker makes that good enough.
+# ---------------------------------------------------------------------------
+_AUTH_FAIL_LIMIT = 120        # failures
+_AUTH_FAIL_WINDOW = 600.0     # per IP per 10 minutes
+
+
+def _client_ip(headers: dict) -> str:
+    xff = headers.get(b"x-forwarded-for", b"").decode(errors="replace")
+    if xff:
+        return xff.split(",")[0].strip()
+    return headers.get(b"x-real-ip", b"").decode(errors="replace")
+
+
+def _auth_fail_limited(ip: str) -> bool:
+    now = time.monotonic()
+    window = _auth_fail_limited.windows
+    q = [t for t in window.get(ip, []) if now - t < _AUTH_FAIL_WINDOW]
+    q.append(now)
+    window[ip] = q
+    if len(window) > 2000:  # keep memory bounded
+        for k in [k for k, v in window.items() if now - v[-1] >= _AUTH_FAIL_WINDOW]:
+            window.pop(k, None)
+    return len(q) > _AUTH_FAIL_LIMIT
+
+
+_auth_fail_limited.windows: dict = {}
+
+
+async def _tokens_api(path: str, method: str, send, receive, qs: dict, principal,
+                      admin_view: bool) -> bool:
+    """Self-service (/api/me/tokens) and admin (/api/admin/tokens) token
+    management. Plaintext tokens appear exactly once, in the create response.
+    Admins can list and revoke anything but never mint for other users."""
+    import tokens as tok_mod
+    from urllib.parse import unquote
+
+    if admin_view:
+        if path == "/api/admin/tokens" and method == "GET":
+            rows = await _to_thread(tok_mod.list_all, (qs.get("user", "") or "").strip())
+            await _send_response(send, *_json_response({"tokens": rows}))
+            return True
+        if path.startswith("/api/admin/tokens/") and method == "DELETE":
+            tid = unquote(path[len("/api/admin/tokens/"):]).strip()
+            ok = await _to_thread(tok_mod.revoke, tid, principal.user_id)
+            await _send_response(send, *_json_response({"ok": ok}))
+            return True
+        return False
+
+    if path == "/api/me/tokens" and method == "GET":
+        rows = await _to_thread(tok_mod.list_for_user, principal.user_id)
+        await _send_response(send, *_json_response({"tokens": rows}))
+        return True
+    if path == "/api/me/tokens" and method == "POST":
+        try:
+            body = json.loads(await _read_body(receive) or b"{}")
+        except Exception:
+            body = {}
+        can_admin = bool(body.get("can_admin")) and principal.is_admin
+        try:
+            row, plain = await _to_thread(
+                tok_mod.create_token, principal.user_id,
+                str(body.get("name", "")), principal.user_id, can_admin,
+                int(body.get("expires_days") or tok_mod.DEFAULT_EXPIRY_DAYS),
+                str(body.get("default_harness", "")),
+            )
+        except Exception as e:
+            await _send_response(send, *_json_response(
+                {"ok": False, "error": f"could not create token: {type(e).__name__}"}, status=500))
+            return True
+        await _send_response(send, *_json_response({
+            "ok": True, "id": row["id"], "token": plain,
+            "expires_at": str(row["expires_at"]), "can_admin": row["can_admin"],
+            "warning": "shown once — store it now; only its hash is kept",
+        }))
+        return True
+    if path.startswith("/api/me/tokens/") and method == "DELETE":
+        tid = unquote(path[len("/api/me/tokens/"):]).strip()
+        ok = await _to_thread(tok_mod.revoke, tid, principal.user_id, principal.user_id)
+        await _send_response(send, *_json_response({"ok": ok}))
+        return True
+    return False
+
+
 async def _scoped_memories(qs: dict, principal, agent_id: str = "") -> list[dict]:
     """List memories according to the caller's scope: own workspace + shared,
     or (admins only) one named tenant or everything."""
@@ -759,6 +845,15 @@ async def app(scope, receive, send):
     if path.startswith("/api/"):
         principal = auth.principal_from_asgi_headers(headers)
         if principal is None:
+            ip = _client_ip(headers)
+            limited = _auth_fail_limited(ip)
+            if not limited:  # don't let a flood turn into an audit-table flood
+                import tokens as _tok
+                _tok.audit("auth_fail", ip=ip, detail=path[:100])
+            if limited:
+                await _send_response(send, 429, [[b"content-type", b"text/plain"]],
+                                     b"Too many failed auth attempts")
+                return
             await _send_response(send, 401, [[b"content-type", b"text/plain"]], b"Unauthorized")
             return
         auth.set_principal(principal)
@@ -770,11 +865,34 @@ async def app(scope, receive, send):
 
         # GET /api/auth/whoami — who does this token belong to?
         if path == "/api/auth/whoami" and method == "GET":
-            await _send_response(send, *_json_response({
+            hdrs: list = [[b"content-type", b"application/json"]]
+            payload = {
                 "user_id": principal.user_id, "role": principal.role, "via": principal.via,
                 "label": principal.label, "shared_tenant": settings.shared_tenant_id,
-            }))
+            }
+            if principal.via == "token" and principal.token_name:
+                payload["token_name"] = principal.token_name
+                payload["token_expires_in_days"] = principal.token_expires_in_days
+                if 0 <= principal.token_expires_in_days < 14:
+                    # Expiry warning for clients that poll whoami (hooks, UI).
+                    payload["token_expiring_soon"] = True
+                    hdrs.append([b"x-token-expires-in-days",
+                                 str(principal.token_expires_in_days).encode()])
+            await _send_response(send, 200, hdrs, json.dumps(payload).encode())
             return
+
+        # Personal API tokens — self-service for any caller...
+        if path == "/api/me/tokens" or path.startswith("/api/me/tokens/"):
+            if await _tokens_api(path, method, send, receive, qs, principal, admin_view=False):
+                return
+
+        # ...and the admin view (masked listing, revoke any; never mint for others).
+        if path.startswith("/api/admin/tokens"):
+            if not principal.is_admin:
+                await _forbidden(send)
+                return
+            if await _tokens_api(path, method, send, receive, qs, principal, admin_view=True):
+                return
 
         if path.startswith("/api/users"):
             if not principal.is_admin:
@@ -796,7 +914,7 @@ async def app(scope, receive, send):
                     qs.get("session_id", "").strip(),
                     qs.get("project", "").strip(),
                     qs.get("source", "startup").strip(),
-                    qs.get("harness", "").strip() or agent_id,
+                    qs.get("harness", "").strip() or principal.default_harness or agent_id,
                     qs.get("tool", "").strip(),
                     principal,
                 )
@@ -834,7 +952,7 @@ async def app(scope, receive, send):
             row = await _to_thread(
                 mem_store.put_auto_notes, session_id, notes,
                 str(body_data.get("project", "")).strip(),
-                str(body_data.get("harness", "")).strip() or agent_id,
+                str(body_data.get("harness", "")).strip() or principal.default_harness or agent_id,
                 principal.user_id,
             )
             if row is None:
@@ -901,7 +1019,7 @@ async def app(scope, receive, send):
                 row = await _to_thread(
                     mem_store.put_checkpoint, session_id, state,
                     str(body_data.get("project", "")).strip(),
-                    str(body_data.get("harness", "")).strip() or agent_id,
+                    str(body_data.get("harness", "")).strip() or principal.default_harness or agent_id,
                     owner,
                 )
                 if row is None:

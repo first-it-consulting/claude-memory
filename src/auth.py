@@ -30,6 +30,11 @@ class Principal:
     role: str             # "user" | "admin"
     via: str              # admin | token | oidc | legacy
     label: str = ""       # display name (audit log)
+    # PAT context (api_tokens path only; defaults for every other caller)
+    token_id: str = ""
+    token_name: str = ""
+    default_harness: str = ""
+    token_expires_in_days: int = -1   # -1 = not a PAT or never expires
 
     @property
     def is_admin(self) -> bool:
@@ -86,6 +91,26 @@ def resolve(token: str) -> Optional[Principal]:
 
 
 def _resolve_api_token(token: str) -> Optional[Principal]:
+    # New-shape PATs (cm_<id>_<secret>) resolve through api_tokens; the
+    # legacy per-user shape (cm_<random>, users.token_hash) keeps its exact
+    # old path below — row-role semantics, unchanged.
+    import tokens
+    try:
+        t = tokens.get_by_token(token)
+    except Exception as e:
+        logger.warning("API token lookup failed (DB?): %s", e)
+        return None
+    if t:
+        role = "admin" if (t["user_role"] == "admin" and t["can_admin"]) else "user"
+        exp = t.get("expires_at")
+        days = -1
+        if exp is not None and t.get("revoked_at") is None and exp.year < 9999:
+            from datetime import datetime, timezone
+            days = max(0, int((exp - datetime.now(timezone.utc)).total_seconds() // 86400))
+        return Principal(t["user_id"], role, "token", t["name"],
+                         token_id=t["id"], token_name=t["name"],
+                         default_harness=t.get("default_harness", ""),
+                         token_expires_in_days=days)
     import users
     try:
         u = users.get_by_token(token)

@@ -200,3 +200,27 @@ def test_norm_harness(main_mod):
     assert f("bad\x01harness") == ""  # control char -> dropped
     assert f("bell\x07") == ""
     assert f("del\x7f") == ""
+
+
+def test_pat_route_id():
+    import tokens
+    assert tokens.route_id("cm_t1a2b3c4d_secretstuff") == "t1a2b3c4d"
+    assert tokens.route_id("cm_-Abc_D_ef") == ""        # legacy urlsafe shape
+    assert tokens.route_id("cm_nootheere") == ""
+    assert tokens.route_id("notcm_x") == ""
+    assert tokens.route_id("cm_tttttttt_x") == ""       # id must be t+8 hex
+    assert tokens.route_id("cm_t12345678_") == ""       # empty secret
+
+
+def test_pat_mask_never_exposes_and_handles_infinity():
+    import datetime as dt
+    import tokens
+    row = {"id": "t1", "user_id": "u", "name": "n", "prefix": "cm_t1", "last4": "abcd",
+           "can_admin": False, "default_harness": "", "created_at": "x", "created_by": "",
+           "expires_at": dt.datetime(9999, 12, 31, tzinfo=dt.timezone.utc),
+           "last_used_at": None, "revoked_at": None, "revoked_by": "",
+           "token_hash": "HASHMUSTNOTLEAK"}
+    m = tokens._mask(row)
+    assert m["expires_in_days"] is None           # 'infinity' -> never
+    assert m["display"] == "cm_t1…abcd"
+    assert "HASHMUSTNOTLEAK" not in str(m)
