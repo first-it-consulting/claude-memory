@@ -234,6 +234,103 @@ def test_expires_days_validation(server, user_with_token):
     assert r2["ok"] and r2["expires_days"] == 365 and "clamped" in r2.get("note", "")
 
 
+def test_service_user_and_legacy_hooks_import(server, user_with_token):
+    # The shared config BEARER_TOKEN gets a visible identity: a 'default'
+    # service user (no per-user cm_ token) and one fixed 'legacy-hooks' row.
+    from config import settings
+    conn = psycopg2.connect(DB_URL)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT role, token_hash FROM users WHERE id = %s",
+                        (settings.mem0_user_id,))
+            svc = cur.fetchone()
+            cur.execute("SELECT name, can_admin, revoked_at FROM api_tokens WHERE id = 'legacy-hooks'")
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    assert svc and svc[0] == "user" and svc[1] is None
+    assert row and row[0] == "legacy-hooks" and row[1] is False and row[2] is None
+    # Idempotent: re-running the import never duplicates the fixed row.
+    tok_mod._schema_ok = False
+    tok_mod.ensure_table()
+    conn = psycopg2.connect(DB_URL)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM api_tokens WHERE id = 'legacy-hooks'")
+            assert cur.fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_revoke_legacy_hooks_kills_shared_bearer(server):
+    # The config-bearer branch checks is_hash_revoked: revoking the
+    # legacy-hooks row must 401 the shared token fleet-wide (restored after).
+    import requests
+    assert requests.get(server + "/api/auth/whoami", headers=_auth(TOKEN),
+                        timeout=20).status_code == 200
+    assert tok_mod.revoke("legacy-hooks", "admin-test") is True
+    assert requests.get(server + "/api/auth/whoami", headers=_auth(TOKEN),
+                        timeout=20).status_code == 401
+    conn = psycopg2.connect(DB_URL)
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE api_tokens SET revoked_at = NULL, revoked_by = '' "
+                            "WHERE id = 'legacy-hooks'")
+    finally:
+        conn.close()
+    assert requests.get(server + "/api/auth/whoami", headers=_auth(TOKEN),
+                        timeout=20).status_code == 200
+
+
+def test_admin_http_revoke_and_restore_legacy_hooks(server, user_with_token):
+    # The UI's revoke button goes over HTTP — the fixed id must be revocable
+    # there too (no t+hex id validation on the admin route).
+    import requests
+    r2 = requests.post(server + "/api/me/tokens", headers=_auth(user_with_token["admin"]),
+                       json={"name": "ops-del", "can_admin": True}, timeout=20).json()
+    adm = _auth(r2["token"])
+    assert requests.get(server + "/api/auth/whoami", headers=_auth(TOKEN),
+                        timeout=20).status_code == 200
+    d = requests.delete(server + "/api/admin/tokens/legacy-hooks", headers=adm, timeout=20)
+    assert d.json()["ok"] is True
+    assert requests.get(server + "/api/auth/whoami", headers=_auth(TOKEN),
+                        timeout=20).status_code == 401
+    # Restore the shared token for the rest of the suite.
+    conn = psycopg2.connect(DB_URL)
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE api_tokens SET revoked_at = NULL, revoked_by = '' "
+                            "WHERE id = 'legacy-hooks'")
+    finally:
+        conn.close()
+    assert requests.get(server + "/api/auth/whoami", headers=_auth(TOKEN),
+                        timeout=20).status_code == 200
+
+
+def test_shared_bearer_touches_last_used(server):
+    # The runbook's "no recent last_used on legacy-hooks" safety check only
+    # works if the config-bearer path keeps the column current.
+    conn = psycopg2.connect(DB_URL)
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE api_tokens SET last_used_at = NULL WHERE id = 'legacy-hooks'")
+    finally:
+        conn.close()
+    import requests
+    assert requests.get(server + "/api/auth/whoami", headers=_auth(TOKEN),
+                        timeout=20).status_code == 200
+    conn = psycopg2.connect(DB_URL)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT last_used_at FROM api_tokens WHERE id = 'legacy-hooks'")
+            assert cur.fetchone()[0] is not None
+    finally:
+        conn.close()
+
+
 def test_wrong_secret_known_id_no_audit_noise(server, user_with_token):
     # A wrong secret on a routable id must not produce expire_reject/revoked
     # evidence — just an anonymous 401.

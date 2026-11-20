@@ -108,6 +108,35 @@ def ensure_table() -> None:
                           AND NOT EXISTS (SELECT 1 FROM api_tokens a
                                           WHERE a.token_hash = u.token_hash)
                     """)
+                    # The shared config BEARER_TOKEN gets a visible identity:
+                    # a 'default' service user (no per-user token of its own)
+                    # and a fixed-id 'legacy-hooks' api_tokens row. Revoking
+                    # that row — checked by the config branch in auth.resolve
+                    # — kills every hook at once (the UI asks for a typed
+                    # confirmation for exactly this reason).
+                    cur.execute(
+                        "INSERT INTO users (id, name, role) "
+                        "VALUES (%s, 'service (shared token)', 'user') "
+                        "ON CONFLICT (id) DO NOTHING",
+                        (settings.mem0_user_id,),
+                    )
+                    if settings.bearer_token:
+                        cur.execute(
+                            """INSERT INTO api_tokens
+                                   (id, user_id, name, prefix, last4, token_hash,
+                                    can_admin, expires_at, created_by)
+                               VALUES ('legacy-hooks', %s, 'legacy-hooks',
+                                       'shared', '----', %s, FALSE,
+                                       'infinity'::timestamptz, 'import')
+                               ON CONFLICT (id) DO UPDATE
+                                   SET token_hash = EXCLUDED.token_hash
+                                 WHERE api_tokens.revoked_at IS NULL
+                                   AND NOT EXISTS (
+                                       SELECT 1 FROM api_tokens a
+                                       WHERE a.token_hash = EXCLUDED.token_hash
+                                         AND a.id <> 'legacy-hooks')""",
+                            (settings.mem0_user_id, _hash(settings.bearer_token)),
+                        )
             _schema_ok = True
         finally:
             conn.close()
@@ -206,26 +235,32 @@ def get_by_token(token: str) -> Optional[dict]:
                 return None
     finally:
         conn.close()
-    # Throttled touch on its own committed connection (at most one write per
-    # token per 5 minutes). Separate short transaction: never blocks the
-    # resolve if it is slow, and actually persists (autocommit-off would
-    # otherwise roll the UPDATE back at close).
+    touch_last_used(tid)
+    return row
+
+
+def touch_last_used(token_id: str) -> None:
+    """Throttled last_used_at touch on its own committed connection (at most
+    one write per token per 5 minutes). Separate short transaction: never
+    blocks the caller if it is slow, never raises into it, and actually
+    persists (autocommit-off would otherwise roll the UPDATE back at close)."""
+    if not token_id:
+        return
     try:
-        conn2 = _db_conn()
+        conn = _db_conn()
         try:
-            with conn2:
-                with conn2.cursor() as cur:
+            with conn:
+                with conn.cursor() as cur:
                     cur.execute(
                         """UPDATE api_tokens SET last_used_at = now()
                            WHERE id = %s AND (last_used_at IS NULL
                                               OR last_used_at < now() - interval '5 minutes')""",
-                        (tid,),
+                        (token_id,),
                     )
         finally:
-            conn2.close()
+            conn.close()
     except Exception as e:
-        logger.debug("last_used touch failed (id=%s): %s", tid, e)
-    return row
+        logger.debug("last_used touch failed (id=%s): %s", token_id, e)
 
 
 def is_hash_revoked(token_hash: str) -> bool:

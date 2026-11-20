@@ -780,8 +780,34 @@ async def _get_all_cached() -> list[dict]:
 # ASGI app
 # ---------------------------------------------------------------------------
 
+_startup_init_started = False
+
+
+def _startup_schema_init() -> None:
+    """Best-effort schema + service-token init at server start (users first:
+    tokens.ensure_table imports from it). Runs in a background thread with a
+    few retries so the legacy-hooks row exists right after rollout even if no
+    request has arrived yet; the lazy ensure path remains the fallback."""
+    import time
+    import tokens
+    for attempt in range(5):
+        try:
+            users_store.ensure_table()
+            tokens.ensure_table()
+            logger.info("startup schema init complete (api_tokens, token_audit, service token)")
+            return
+        except Exception as e:
+            logger.warning("startup schema init attempt %d failed: %s", attempt + 1, e)
+            time.sleep(5)
+
+
 async def app(scope, receive, send):
     if scope["type"] == "lifespan":
+        global _startup_init_started
+        if not _startup_init_started:
+            _startup_init_started = True
+            asyncio.get_running_loop().run_in_executor(
+                None, _startup_schema_init)
         await _starlette_app(scope, receive, send)
         return
 
