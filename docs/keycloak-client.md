@@ -1,23 +1,23 @@
 # Keycloak client runbook: claude-memory-ui
 
-The claude-memory UI signs users in via Keycloak OIDC (realm `example-realm` on
-`https://auth.example.internal`). The client and its role were created
+The claude-memory UI signs users in via Keycloak OIDC (realm `my-realm` on
+`https://keycloak.example.com`). The client and its role were created
 manually in the admin console — there is no client IaC for this realm yet
 (tracked and scrapped as out of scope; this runbook is the recovery path).
 Server-side settings live in example-project
 (`kubernetes/apps/selfhosted/claude-memory/app/helmrelease.yaml`):
 `OIDC_ISSUER`, `OIDC_CLIENT_ID=claude-memory-ui`, `OIDC_ADMIN_ROLES=claude-memory-admin`.
 
-## Client `claude-memory-ui` (realm example-realm)
+## Client `claude-memory-ui` (realm my-realm)
 
 | Setting | Value |
 | --- | --- |
 | Client authentication | **Off** (public SPA client — no secret) |
 | Standard flow | On |
 | PKCE | **S256** (Proof Key for Code Exchange Code Challenge Method) |
-| Valid redirect URIs | `https://app.example.internal/*` |
-| Valid post logout redirect URIs | `https://app.example.internal/*` |
-| Web origins | `https://app.example.internal` |
+| Valid redirect URIs | `https://claude-memory.example.com/*` |
+| Valid post logout redirect URIs | `https://claude-memory.example.com/*` |
+| Web origins | `https://claude-memory.example.com` |
 
 The UI (keycloak-js) redirects to `window.location.origin + pathname`, so the
 wildcard on the app origin is what matters.
@@ -37,13 +37,13 @@ realm role takes effect on the next token refresh+request without touching the
 database.
 
 Live changes on 2026-11-20: `claude-memory-admin` granted to realm users
-`helge` (at rollout) and `admin` (browser logins use this account; it had
+`my-user` (at rollout) and `admin` (browser logins use this account; it had
 auto-created an empty `user`-role workspace, which the role grant promotes to
 admin on next login). Server-side workspaces: `default` holds all pre-existing
-data (legacy bearer clients depend on it), `helge` is the API-token identity,
+data (legacy bearer clients depend on it), `my-user` is the API-token identity,
 `admin` is the browser login identity. If someone later logs in with the
-Keycloak `helge` account, `upsert_oidc_user` links its `sub` into the existing
-`helge` row (username taken, `oidc_sub` NULL) — merging the API-token and
+Keycloak `my-user` account, `upsert_oidc_user` links its `sub` into the existing
+`my-user` row (username taken, `oidc_sub` NULL) — merging the API-token and
 browser identities into that workspace.
 
 ## Audience mapper (the 26.3.3 trap)
@@ -69,7 +69,7 @@ Keycloak again). Use `included.custom.audience` only. With the correct config
 Public clients cannot be token-granted directly. Create a throwaway
 **confidential twin** client (same mappers, copy the generated secret), then:
 
-1. Password-grant a token: `POST /realms/example-realm/protocol/openid-connect/token`
+1. Password-grant a token: `POST /realms/my-realm/protocol/openid-connect/token`
    with `client_id`/`client_secret` of the twin, `grant_type=password`, a test user.
 2. Decode the `access_token` payload (JWT) and check `aud` contains `claude-memory-ui`.
 3. Delete the twin client.

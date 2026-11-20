@@ -28,8 +28,8 @@ up (dedup only runs at write time). Dry-run flags identical payload
 "data" texts across the two tenants.
 
 Run in-cluster (image has psycopg2, no pg_dump):
-  DATABASE_URL=... python scripts/retenant.py --source default --target helge
-  DATABASE_URL=... python scripts/retenant.py --source default --target helge --apply
+  DATABASE_URL=... python scripts/retenant.py --source default --target my-user
+  DATABASE_URL=... python scripts/retenant.py --source default --target my-user --apply
   DATABASE_URL=... python scripts/retenant.py --restore 20261120T090000
 """
 import argparse
@@ -113,10 +113,12 @@ def _restore(cur, tag, source):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", default="default")
-    ap.add_argument("--target", default="helge")
+    ap.add_argument("--target")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--restore", metavar="TAG")
     args = ap.parse_args()
+    if not args.restore and not args.target:
+        ap.error("--target is required unless --restore is used")
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     cur = conn.cursor()
 

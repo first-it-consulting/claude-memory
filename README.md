@@ -227,8 +227,8 @@ Admins may add `?tenant=<id>` or `?scope=all` where marked *(admin scope)*.
 docker buildx bake -f docker-bake.hcl image-local
 
 # Multi-platform (amd64 + arm64) build to a registry
-docker buildx bake -f docker-bake.hcl image-all --push \
-  --set "*.tags=registry.example.internal/first-it-consulting/claude-memory:rolling"
+# REGISTRY defaults to ghcr.io/first-it-consulting; override to publish elsewhere
+REGISTRY=ghcr.io/<you> docker buildx bake -f docker-bake.hcl image-all --push
 ```
 
 ### Run locally (Docker)
@@ -312,5 +312,4 @@ adapters/                      # harness hook adapters (see adapters/README.md)
 
 ## License
 
-Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE). Image registry:
-`registry.example.internal/first-it-consulting/claude-memory`.
+Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE).

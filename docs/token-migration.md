@@ -15,7 +15,7 @@ a typed confirmation (`revoke-all-hooks`) before allowing that.
 2. On the device, replace the shared token in `~/.config/agent-memory/env`:
 
    ```
-   AGENT_MEMORY_URL=https://app.example.internal
+   AGENT_MEMORY_URL=https://claude-memory.example.com
    AGENT_MEMORY_TOKEN=cm_tXXXXXXXX_...   # the new personal token
    ```
 
@@ -25,7 +25,7 @@ a typed confirmation (`revoke-all-hooks`) before allowing that.
 
    ```
    curl -s -H "Authorization: Bearer $(grep AGENT_MEMORY_TOKEN ~/.config/agent-memory/env | cut -d= -f2)" \
-     https://app.example.internal/api/sessions?limit=1 -o /dev/null -w '%{http_code}\n'
+     https://claude-memory.example.com/api/sessions?limit=1 -o /dev/null -w '%{http_code}\n'
    ```
 
    Expect `200`. In the admin **Tokens** view the token's *last used* ticks.
@@ -43,7 +43,7 @@ must be moved first: `scripts/retenant.py` (dry-run first; single
 transaction, in-DB backup table, `--restore` rollback), design and options
 in [retenant-design.md](retenant-design.md). This was done on 2026-11-20:
 all 195 memories, 11 archive rows and 57 sessions moved `default` ->
-`helge` before the Mac was migrated.
+`my-user` before the Mac was migrated.
 
 ## Notes
 
