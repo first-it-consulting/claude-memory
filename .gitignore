@@ -25,3 +25,10 @@ env/
 
 # Docker buildx state (generated)
 .build-state/
+
+# Test/editor caches
+.pytest_cache/
+.claude/
+
+# Backups
+*.bak
