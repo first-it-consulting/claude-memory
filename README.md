@@ -1,5 +1,7 @@
 # claude-memory
 
+[![test](https://github.com/first-it-consulting/claude-memory/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/first-it-consulting/claude-memory/actions/workflows/test.yml)
+
 A self-hosted **memory server for AI agents** (Claude Code, Cursor, and other MCP clients). It stores facts and observations about your infrastructure, projects, and workflows so agents don't have to re-learn them on every session.
 
 Built on [mem0](https://github.com/mem0ai/mem0) with **pgvector** storage, optional async processing via **Redis**, and an LLM-powered deduplication job. Exposes both an [MCP](https://modelcontextprotocol.io) interface and a REST API.
@@ -307,6 +309,13 @@ adapters/                      # harness hook adapters (see adapters/README.md)
 
 - **[claude-memory-ui](https://github.com/first-it-consulting/claude-memory-ui)** — React + Vite single-page app with a FastAPI proxy that provides a web UI for managing memories, stats, jobs and tag rules.
 - **[containers-images](https://github.com/first-it-consulting/containers-images)** — the monorepo claude-memory was originally part of (now extracted).
+
+---
+
+## Contributing and security
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Please report security issues privately as described in [SECURITY.md](SECURITY.md).
 
 ---
 
