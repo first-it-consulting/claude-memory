@@ -52,7 +52,8 @@ def test_pat_mint_use_list_revoke(server, user_with_token):
     body = r.json()
     assert r.status_code == 200 and body["ok"]
     pat = body["token"]
-    assert pat.startswith("cm_t") and pat.count("_") == 2
+    # urlsafe secrets can contain '_' (even leading) — assert routing, not shape
+    assert pat.startswith("cm_t") and tok_mod.route_id(pat) == body["id"]
 
     # the PAT resolves and whoami carries token context
     w = whoami(server, pat).json()

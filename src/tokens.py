@@ -180,7 +180,7 @@ def get_by_token(token: str) -> Optional[dict]:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cols = ", a.".join(TOKEN_COLUMNS.split(", "))
             cur.execute(
-                f"""SELECT a.{cols},
+                f"""SELECT a.{cols}, a.token_hash,
                            u.role AS user_role, u.disabled AS user_disabled
                     FROM api_tokens a JOIN users u ON u.id = a.user_id
                     WHERE a.id = %s""",
@@ -194,6 +194,7 @@ def get_by_token(token: str) -> Optional[dict]:
             # revoked/expired branches (no audit rows, no misleading logs).
             if not hmac.compare_digest(row["token_hash"], _hash(token)):
                 return None
+            row.pop("token_hash", None)  # never leaves the module
             if row["revoked_at"] is not None:
                 return None
             now = datetime.now(timezone.utc)
