@@ -4,8 +4,7 @@ The claude-memory UI signs users in via Keycloak OIDC (realm `my-realm` on
 `https://keycloak.example.com`). The client and its role were created
 manually in the admin console — there is no client IaC for this realm yet
 (tracked and scrapped as out of scope; this runbook is the recovery path).
-Server-side settings live in example-project
-(`kubernetes/apps/selfhosted/claude-memory/app/helmrelease.yaml`):
+Server-side settings live in the (private) GitOps repo:
 `OIDC_ISSUER`, `OIDC_CLIENT_ID=claude-memory-ui`, `OIDC_ADMIN_ROLES=claude-memory-admin`.
 
 ## Client `claude-memory-ui` (realm my-realm)

@@ -174,9 +174,9 @@ def test_emit_context_skips_empty(hook, capsys):
 # --- hook output condensing (recall / briefing) ----------------------------------
 
 IMPORTED_FILE = (
-    "[origin: some-project | file: k3s-node-upgrades.md] ---\n"
-    "name: k3s-node-upgrades\n"
-    "description: How k3s node OS updates are automated (kured + staggered upgrades)\n"
+    "[origin: some-project | file: cluster-node-upgrades.md] ---\n"
+    "name: cluster-node-upgrades\n"
+    "description: How cluster node OS updates are automated (kured + staggered upgrades)\n"
     "metadata:\n  type: project\n---\n\n"
     "Since 2026-11-11 unattended-upgrades run staggered per node. " + "x" * 2000
 )
@@ -185,7 +185,7 @@ IMPORTED_FILE = (
 def test_condense_keeps_description_and_body_start(main_mod):
     out = main_mod._condense(IMPORTED_FILE, 200)
     assert out.startswith(
-        "How k3s node OS updates are automated (kured + staggered upgrades) — Since 2026-11-11"
+        "How cluster node OS updates are automated (kured + staggered upgrades) — Since 2026-11-11"
     )
     assert "[origin:" not in out and "metadata:" not in out and "\n" not in out
     assert len(out) <= 200 and out.endswith("…")

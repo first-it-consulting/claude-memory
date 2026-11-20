@@ -29,7 +29,7 @@ against a migrated database** — that is the rollback guarantee.
    Each user points their harness adapter's `MEMORY_TOKEN` at their own token.
 4. Browser users log in via the UI (Keycloak). First login provisions their
    account; grant admin via the realm role `claude-memory-admin` if needed.
-5. Optionally publish shared homelab facts:
+5. Optionally publish shared facts:
    `POST /api/memories {"content": "...", "shared": true}` (admin).
 6. Retire `BEARER_TOKEN` once all adapters use personal tokens: set it to a
    random value so the shared secret stops working (or remove the env var).

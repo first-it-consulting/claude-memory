@@ -33,7 +33,7 @@ CORPUS = [
     },
     {
         "id": "33333333-3333-3333-3333-333333333333",
-        "memory": "Ollama runs on CPU only in the homelab",
+        "memory": "Ollama runs on CPU only in the lab cluster",
         "user_id": "default",
         "agent_id": "pi",
         "metadata": {"category": "user"},

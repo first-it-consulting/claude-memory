@@ -114,7 +114,7 @@ def test_recall_skips_short_prompts(api, fake_mem):
 
 
 def test_recall_min_score_and_limit_params(api):
-    q = "prod-k8s cnpg kyverno require-labels ollama cpu homelab"
+    q = "prod-k8s cnpg kyverno require-labels ollama cpu lab"
     assert api.get("/api/hooks/recall", q=q, min_score=0.99).json()["context"] == ""
     ctx = api.get("/api/hooks/recall", q=q, min_score=0, limit=1).json()["context"]
     assert ctx.count("\n- ") == 1
