@@ -33,6 +33,18 @@ a typed confirmation (`revoke-all-hooks`) before allowing that.
    `last_used` needed for `legacy-hooks`), revoke `legacy-hooks` with the
    typed confirmation. Keep it until then — it is the rollback path.
 
+## Gotcha: re-tenant data BEFORE migrating devices
+
+A personal token reads and writes **its user's own tenant**. Anything still
+owned by the shared `default` tenant (memories, archives, session state)
+is invisible to a migrated device — it would see an empty workspace and
+start writing into a split tenant. So any data that should follow a user
+must be moved first: `scripts/retenant.py` (dry-run first; single
+transaction, in-DB backup table, `--restore` rollback), design and options
+in [retenant-design.md](retenant-design.md). This was done on 2026-11-20:
+all 195 memories, 11 archive rows and 57 sessions moved `default` ->
+`helge` before the Mac was migrated.
+
 ## Notes
 
 - A lost device is handled by revoking **its** token in **My tokens** (or the
