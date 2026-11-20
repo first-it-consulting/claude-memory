@@ -309,7 +309,6 @@ def phase0_llm_tagging(conn, dry_run: bool) -> int:
         for item in pending:
             llm_tags = ollama_assign_tags(item["text"], available_tags)
             existing = _extract_meta(item["payload"]).get("tags") or []
-            merged = sorted(set(existing) | set(llm_tags))
             added = sorted(set(llm_tags) - set(existing))
             log.info(
                 "  %s → existing=%s llm=%s added=%s",
