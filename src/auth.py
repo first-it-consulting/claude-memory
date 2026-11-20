@@ -86,6 +86,20 @@ def resolve(token: str) -> Optional[Principal]:
         return None
 
     if _eq(token, settings.bearer_token):
+        # Revocation truth: the shared token is registered as the
+        # 'legacy-hooks' api_tokens row (tokens.ensure_table imports it), so
+        # revoking that row kills every hook fleet-wide. This makes the
+        # config path DB-dependent — deliberate: a revoked shared token must
+        # stay dead, and during a DB outage the hooks could not read or write
+        # anyway. Fail closed on lookup errors.
+        import tokens
+        try:
+            if tokens.is_hash_revoked(tokens._hash(token)):
+                logger.info("auth: shared legacy token revoked (legacy-hooks)")
+                return None
+        except Exception as e:
+            logger.warning("auth: shared-token revocation check failed (DB?): %s", e)
+            return None
         return Principal(settings.mem0_user_id, "user", "legacy", "legacy-token")
     return None
 

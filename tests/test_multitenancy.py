@@ -80,8 +80,12 @@ def test_api_token_authenticates_its_tenant(server, alice):
 def test_users_crud_and_one_time_token(server, admin, alice):
     uid, token = alice
     listed = req(server, "GET", "/api/users", token=admin).json()
-    assert [u["id"] for u in listed] == ["alice"]
-    assert "token_hash" not in listed[0] and listed[0]["name"] == "Alice"
+    ids = {u["id"] for u in listed}
+    # 'default' is the service user behind the shared token; it appears once
+    # any token op has run (lazy import), so accept it but nothing else.
+    assert "alice" in ids and ids <= {"alice", "default"}
+    alice_row = [u for u in listed if u["id"] == "alice"][0]
+    assert "token_hash" not in alice_row and alice_row["name"] == "Alice"
 
     rot = req(server, "POST", "/api/users/alice/rotate-token", token=admin).json()
     new_token = rot["token"]

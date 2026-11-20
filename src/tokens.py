@@ -108,6 +108,35 @@ def ensure_table() -> None:
                           AND NOT EXISTS (SELECT 1 FROM api_tokens a
                                           WHERE a.token_hash = u.token_hash)
                     """)
+                    # The shared config BEARER_TOKEN gets a visible identity:
+                    # a 'default' service user (no per-user token of its own)
+                    # and a fixed-id 'legacy-hooks' api_tokens row. Revoking
+                    # that row — checked by the config branch in auth.resolve
+                    # — kills every hook at once (the UI asks for a typed
+                    # confirmation for exactly this reason).
+                    cur.execute(
+                        "INSERT INTO users (id, name, role) "
+                        "VALUES (%s, 'service (shared token)', 'user') "
+                        "ON CONFLICT (id) DO NOTHING",
+                        (settings.mem0_user_id,),
+                    )
+                    if settings.bearer_token:
+                        cur.execute(
+                            """INSERT INTO api_tokens
+                                   (id, user_id, name, prefix, last4, token_hash,
+                                    can_admin, expires_at, created_by)
+                               VALUES ('legacy-hooks', %s, 'legacy-hooks',
+                                       'shared', '----', %s, FALSE,
+                                       'infinity'::timestamptz, 'import')
+                               ON CONFLICT (id) DO UPDATE
+                                   SET token_hash = EXCLUDED.token_hash
+                                 WHERE api_tokens.revoked_at IS NULL
+                                   AND NOT EXISTS (
+                                       SELECT 1 FROM api_tokens a
+                                       WHERE a.token_hash = EXCLUDED.token_hash
+                                         AND a.id <> 'legacy-hooks')""",
+                            (settings.mem0_user_id, _hash(settings.bearer_token)),
+                        )
             _schema_ok = True
         finally:
             conn.close()
