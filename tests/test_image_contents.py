@@ -1,5 +1,6 @@
 """The Dockerfile copies source files explicitly; a module it misses only fails
 at runtime in the cluster (the nightly job once died on `import promotion`)."""
+
 import re
 from pathlib import Path
 
@@ -19,5 +20,7 @@ def _copied() -> set[str]:
 def test_every_server_and_script_module_is_in_the_image():
     copied = _copied()
     wanted = {str(p.relative_to(ROOT)) for p in (ROOT / "src").glob("*.py")}
-    wanted |= {str(p.relative_to(ROOT)) for p in (ROOT / "src" / "scripts").glob("*.py")}
+    wanted |= {
+        str(p.relative_to(ROOT)) for p in (ROOT / "src" / "scripts").glob("*.py")
+    }
     assert wanted - copied == set()

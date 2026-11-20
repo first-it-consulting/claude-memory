@@ -1,5 +1,6 @@
 """Checkpoint promotion: parsing of Decisions / Dead ends and the nightly phase
 (dry-run vs on, duplicates, failures). No database needed."""
+
 from __future__ import annotations
 
 import sys
@@ -43,14 +44,19 @@ Analyse the repo.
 def test_extracts_only_decisions_and_dead_ends():
     got = p.extract(CODEX_STATE)
     assert [k for k, _ in got] == ["decision"] * 3
-    assert got[2][1] == ("Fixed release workflow: git config must come before tag creation, "
-                         "tag_name must be explicit")
+    assert got[2][1] == (
+        "Fixed release workflow: git config must come before tag creation, "
+        "tag_name must be explicit"
+    )
     assert all("ci.yml" not in t for _, t in got)
 
 
 def test_bold_and_numbered_headings_and_kinds():
     got = p.extract(QWEN_STATE)
-    assert got[0] == ("dead-end", "Digest-pinning images failed because registry GC removed untagged multi-arch children")
+    assert got[0] == (
+        "dead-end",
+        "Digest-pinning images failed because registry GC removed untagged multi-arch children",
+    )
     assert ("dead-end", "none") in got
     assert got[-1][0] == "decision"
 
@@ -59,7 +65,7 @@ def test_keep_filters_short_and_session_only_lines():
     kept, dropped = p.candidates(QWEN_STATE + CODEX_STATE, "example-project", "Qwen")
     texts = [c["text"] for c in kept]
     assert any(t.startswith("Digest-pinning") for t in texts)
-    assert not any("for now" in t for t in texts)       # session-only
+    assert not any("for now" in t for t in texts)  # session-only
     assert not any(t == "Bumped chart version to 0.2.0" for t in texts)  # too short
     assert ("dead-end", "none") in dropped
 
@@ -67,17 +73,25 @@ def test_keep_filters_short_and_session_only_lines():
 def test_content_and_tags():
     kept, _ = p.candidates(CODEX_STATE, "mysql-galera", "codex")
     c = kept[0]
-    assert c["content"] == "Decision (mysql-galera): Removed kubeval from CI due to SSL cert issues with kubernetesjsonschema.dev"
+    assert (
+        c["content"]
+        == "Decision (mysql-galera): Removed kubeval from CI due to SSL cert issues with kubernetesjsonschema.dev"
+    )
     assert c["tags"] == ["auto-promoted", "codex", "decision", "mysql-galera"]
     assert p.content_for("dead-end", "x " * 400, "")[:10] == "Dead end: "
     assert len(p.content_for("decision", "y" * 1000, "p")) < 640
 
 
 def test_no_sections_no_candidates():
-    assert p.candidates("## Goal\nfoo\n## Done\n- a long line that is not a decision at all, really", "p", "h") == ([], [])
+    assert p.candidates(
+        "## Goal\nfoo\n## Done\n- a long line that is not a decision at all, really",
+        "p",
+        "h",
+    ) == ([], [])
 
 
 # --- phase against a fake connection -------------------------------------------
+
 
 class Conn:
     def __init__(self, sessions):
@@ -125,9 +139,24 @@ class Cur:
 
 def _sessions():
     return [
-        {"session_id": "s1", "project": "mysql-galera", "harness": "codex", "state": CODEX_STATE},
-        {"session_id": "s2", "project": "example-project", "harness": "qwen", "state": QWEN_STATE},
-        {"session_id": "s3", "project": "x", "harness": "pi", "state": "## Goal\nnothing to promote here"},
+        {
+            "session_id": "s1",
+            "project": "mysql-galera",
+            "harness": "codex",
+            "state": CODEX_STATE,
+        },
+        {
+            "session_id": "s2",
+            "project": "example-project",
+            "harness": "qwen",
+            "state": QWEN_STATE,
+        },
+        {
+            "session_id": "s3",
+            "project": "x",
+            "harness": "pi",
+            "state": "## Goal\nnothing to promote here",
+        },
     ]
 
 
@@ -138,12 +167,17 @@ def no_dups(monkeypatch):
 
 def test_dry_run_reports_without_storing(monkeypatch, no_dups):
     conn = Conn(_sessions())
-    monkeypatch.setattr(d, "store_memory_direct", lambda *a, **k: pytest.fail("dry run must not store"))
+    monkeypatch.setattr(
+        d, "store_memory_direct", lambda *a, **k: pytest.fail("dry run must not store")
+    )
     n = d.phase_promote_checkpoints(conn, dry_run=False, mode="dry-run", idle_hours=12)
     assert n == 3
-    assert conn.marked == []                       # sessions stay pending
+    assert conn.marked == []  # sessions stay pending
     assert conn.runs["details"].startswith("DRY RUN")
-    assert "WOULD PROMOTE: Decision (mysql-galera): Removed kubeval" in conn.runs["details"]
+    assert (
+        "WOULD PROMOTE: Decision (mysql-galera): Removed kubeval"
+        in conn.runs["details"]
+    )
 
 
 def test_on_stores_tags_metadata_and_marks(monkeypatch, no_dups):
@@ -164,19 +198,34 @@ def test_on_stores_tags_metadata_and_marks(monkeypatch, no_dups):
 
 def test_global_dry_run_flag_wins(monkeypatch, no_dups):
     conn = Conn(_sessions())
-    monkeypatch.setattr(d, "store_memory_direct", lambda *a, **k: pytest.fail("must not store"))
+    monkeypatch.setattr(
+        d, "store_memory_direct", lambda *a, **k: pytest.fail("must not store")
+    )
     d.phase_promote_checkpoints(conn, dry_run=True, mode="on")
     assert conn.marked == []
 
 
 def test_known_lines_and_repeats_are_skipped(monkeypatch):
-    sessions = _sessions() + [{"session_id": "s4", "project": "mysql-galera", "harness": "qwen", "state": CODEX_STATE}]
+    sessions = _sessions() + [
+        {
+            "session_id": "s4",
+            "project": "mysql-galera",
+            "harness": "qwen",
+            "state": CODEX_STATE,
+        }
+    ]
     conn, stored = Conn(sessions), []
-    monkeypatch.setattr(d, "find_duplicate", lambda text, thr, user_id=None: 0.97 if "kubeval" in text else None)
-    monkeypatch.setattr(d, "store_memory_direct", lambda c, **k: stored.append(c) or "id")
+    monkeypatch.setattr(
+        d,
+        "find_duplicate",
+        lambda text, thr, user_id=None: 0.97 if "kubeval" in text else None,
+    )
+    monkeypatch.setattr(
+        d, "store_memory_direct", lambda c, **k: stored.append(c) or "id"
+    )
     d.phase_promote_checkpoints(conn, dry_run=False, mode="on")
     assert not any("kubeval" in c for c in stored)
-    assert sum("release workflow" in c for c in stored) == 1   # s4 repeats s1
+    assert sum("release workflow" in c for c in stored) == 1  # s4 repeats s1
     assert "already known, 0.97" in conn.runs["details"]
 
 
@@ -196,11 +245,18 @@ def test_off_does_nothing():
 
 # --- recall ranking ------------------------------------------------------------
 
+
 def test_auto_promoted_ranks_below_deliberate():
     sys.path.insert(0, str(ROOT / "src"))
     import main
+
     deliberate = {"score": 0.80, "metadata": {"tags": ["ci"]}}
-    promoted = {"score": 0.80, "metadata": {"metadata": {"tags": ["auto-promoted", "decision"]}}}
+    promoted = {
+        "score": 0.80,
+        "metadata": {"metadata": {"tags": ["auto-promoted", "decision"]}},
+    }
     assert main._rank_score(deliberate) == 0.80
-    assert main._rank_score(promoted) == pytest.approx(0.80 - main.settings.promoted_recall_penalty)
+    assert main._rank_score(promoted) == pytest.approx(
+        0.80 - main.settings.promoted_recall_penalty
+    )
     assert main._rank_score({"score": None}) is None

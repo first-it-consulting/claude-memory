@@ -43,7 +43,13 @@ _TAG_RULES_SEED: dict[str, list[str]] = {
     "etcd": ["etcd"],
     "bgp": ["bgp", "bird", "bgppeers"],
     "networking": ["networking", "network policy", "loadbalancer"],
-    "monitoring": ["prometheus", "grafana", "alertmanager", "monitoring", "servicemonitor"],
+    "monitoring": [
+        "prometheus",
+        "grafana",
+        "alertmanager",
+        "monitoring",
+        "servicemonitor",
+    ],
     "helm": ["helm", "helmchart", "helm chart", "helmrelease"],
     "storage": ["storage", "pvc", "persistentvolume", "nfs", "longhorn", "rook"],
     "auth": ["auth", "keycloak", "oauth", "oidc", "sso"],
@@ -101,7 +107,9 @@ def _ensure_schema() -> None:
                             error            TEXT
                         )
                     """)
-                    cur.execute("ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS details TEXT")
+                    cur.execute(
+                        "ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS details TEXT"
+                    )
                     cur.execute("SELECT COUNT(*) FROM tag_rules")
                     if cur.fetchone()[0] == 0:
                         for tag, keywords in _TAG_RULES_SEED.items():
@@ -154,7 +162,8 @@ def _invalidate_rules_cache() -> None:
 def _auto_tag(text: str) -> list[str]:
     text_lower = text.lower()
     return sorted(
-        tag for tag, keywords in _get_rules().items()
+        tag
+        for tag, keywords in _get_rules().items()
         if any(k in text_lower for k in keywords)
     )
 
@@ -164,7 +173,9 @@ def list_tag_rules() -> list[dict]:
     conn = _db_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT tag, keyword, source FROM tag_rules ORDER BY tag, keyword")
+            cur.execute(
+                "SELECT tag, keyword, source FROM tag_rules ORDER BY tag, keyword"
+            )
             return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -236,6 +247,7 @@ def get_job_run(run_id: str) -> dict | None:
 # mem0 client
 # ---------------------------------------------------------------------------
 
+
 def _build_config() -> MemoryConfig:
     return MemoryConfig(
         custom_instructions=settings.mem0_custom_instructions or None,
@@ -288,9 +300,14 @@ def _apply_ollama_timeout(m: Memory) -> None:
     behind it). Swap in clients with a bounded timeout."""
     try:
         from ollama import Client
+
         for component in (getattr(m, "llm", None), getattr(m, "embedding_model", None)):
-            if component is not None and isinstance(getattr(component, "client", None), Client):
-                component.client = Client(host=settings.ollama_base_url, timeout=settings.ollama_timeout)
+            if component is not None and isinstance(
+                getattr(component, "client", None), Client
+            ):
+                component.client = Client(
+                    host=settings.ollama_base_url, timeout=settings.ollama_timeout
+                )
     except Exception as e:
         logger.warning("could not set Ollama timeout (non-fatal): %s", e)
 
@@ -299,7 +316,15 @@ def _agent_id(agent_id: str) -> str:
     return agent_id if agent_id else settings.mem0_agent_id
 
 
-VALID_CATEGORIES = {"project", "feedback", "reference", "user", "session", "incident", ""}
+VALID_CATEGORIES = {
+    "project",
+    "feedback",
+    "reference",
+    "user",
+    "session",
+    "incident",
+    "",
+}
 
 
 def _tenant(user_id: str | None) -> str:
@@ -313,8 +338,15 @@ def _results(result) -> list[dict]:
     return result if isinstance(result, list) else []
 
 
-def add(content: str, user_id: str | None = None, agent_id: str = "", infer: bool | None = None,
-        category: str = "", tags: list | None = None, extra_metadata: dict | None = None) -> dict:
+def add(
+    content: str,
+    user_id: str | None = None,
+    agent_id: str = "",
+    infer: bool | None = None,
+    category: str = "",
+    tags: list | None = None,
+    extra_metadata: dict | None = None,
+) -> dict:
     m = get_memory()
     metadata: dict = dict(extra_metadata or {})
     if category:
@@ -325,8 +357,11 @@ def add(content: str, user_id: str | None = None, agent_id: str = "", infer: boo
     if merged:
         metadata["tags"] = merged
     do_infer = settings.mem0_infer if infer is None else infer
-    kwargs = dict(user_id=_tenant(user_id), agent_id=_agent_id(agent_id),
-                  metadata=metadata if metadata else None)
+    kwargs = dict(
+        user_id=_tenant(user_id),
+        agent_id=_agent_id(agent_id),
+        metadata=metadata if metadata else None,
+    )
     result = m.add(content, infer=do_infer, **kwargs)
     if do_infer and settings.add_raw_fallback and not (result or {}).get("results"):
         # The LLM extracted no facts (or judged the note a duplicate). The agent
@@ -340,8 +375,13 @@ def _search_one(m: Memory, query: str, tenant: str, top_k: int) -> list[dict]:
     return _results(m.search(query, filters={"user_id": tenant}, top_k=top_k))
 
 
-def search(query: str, limit: int = 5, agent_id: str = "", user_id: str | None = None,
-           include_shared: bool = True) -> list[dict]:
+def search(
+    query: str,
+    limit: int = 5,
+    agent_id: str = "",
+    user_id: str | None = None,
+    include_shared: bool = True,
+) -> list[dict]:
     """Semantic search inside one tenant, merged with the shared space.
 
     Two queries instead of one `user_id IN (...)` filter: mem0's filter
@@ -365,7 +405,9 @@ def search(query: str, limit: int = 5, agent_id: str = "", user_id: str | None =
     return out[:limit]
 
 
-def search_across(query: str, limit: int, tenants: list[str] | None = None) -> list[dict]:
+def search_across(
+    query: str, limit: int, tenants: list[str] | None = None
+) -> list[dict]:
     """Admin view: search every tenant, best scores first.
 
     Prefers a single unfiltered search (covers namespaces that exist in the
@@ -378,6 +420,7 @@ def search_across(query: str, limit: int, tenants: list[str] | None = None) -> l
         pass
     if tenants is None:
         import users as users_store
+
         tenants = users_store.list_tenant_ids()
     merged: dict[str, dict] = {}
     for t in tenants:
@@ -386,7 +429,9 @@ def search_across(query: str, limit: int, tenants: list[str] | None = None) -> l
             prev = merged.get(rid)
             if prev is None or (r.get("score") or 0) > (prev.get("score") or 0):
                 merged[rid] = r
-    return sorted(merged.values(), key=lambda r: r.get("score") or 0, reverse=True)[:limit]
+    return sorted(merged.values(), key=lambda r: r.get("score") or 0, reverse=True)[
+        :limit
+    ]
 
 
 def _get_all_one(m: Memory, tenant: str, agent_id: str) -> list[dict]:
@@ -396,8 +441,9 @@ def _get_all_one(m: Memory, tenant: str, agent_id: str) -> list[dict]:
     return _results(m.get_all(filters=filters, top_k=10000))
 
 
-def get_all(agent_id: str = "", user_id: str | None = None,
-            include_shared: bool = True) -> list[dict]:
+def get_all(
+    agent_id: str = "", user_id: str | None = None, include_shared: bool = True
+) -> list[dict]:
     m = get_memory()
     tenant = _tenant(user_id)
     tenants = [tenant]
@@ -421,6 +467,7 @@ def get_all_across(agent_id: str = "", tenants: list[str] | None = None) -> list
         pass
     if tenants is None:
         import users as users_store
+
         tenants = users_store.list_tenant_ids()
     merged: dict[str, dict] = {}
     for t in tenants:
@@ -453,8 +500,9 @@ def delete(memory_id: str) -> dict:
     return m.delete(memory_id)
 
 
-def update_tags(memory_id: str, tags: list, user_id: str | None = None,
-                allow_all: bool = False) -> bool:
+def update_tags(
+    memory_id: str, tags: list, user_id: str | None = None, allow_all: bool = False
+) -> bool:
     """Directly patch the tags field in the DB payload, preserving all other
     metadata. Fails (False) when the memory belongs to another tenant."""
     conn = _db_conn()
@@ -497,7 +545,9 @@ def update_tags(memory_id: str, tags: list, user_id: str | None = None,
 _session_schema_ok = False
 _session_schema_lock = threading.Lock()
 
-_SESSION_COLUMNS = "session_id, owner, project, harness, state, auto_notes, created_at, updated_at"
+_SESSION_COLUMNS = (
+    "session_id, owner, project, harness, state, auto_notes, created_at, updated_at"
+)
 
 
 def _ensure_session_table() -> None:
@@ -542,8 +592,14 @@ def _ensure_session_table() -> None:
             conn.close()
 
 
-def _upsert_session(session_id: str, column: str, value: str, project: str, harness: str,
-                    owner: str | None = None) -> dict:
+def _upsert_session(
+    session_id: str,
+    column: str,
+    value: str,
+    project: str,
+    harness: str,
+    owner: str | None = None,
+) -> dict:
     assert column in ("state", "auto_notes")
     _ensure_session_table()
     tenant = _tenant(owner)
@@ -578,8 +634,9 @@ def _upsert_session(session_id: str, column: str, value: str, project: str, harn
         conn.close()
 
 
-def register_session(session_id: str, project: str = "", harness: str = "",
-                     owner: str | None = None) -> None:
+def register_session(
+    session_id: str, project: str = "", harness: str = "", owner: str | None = None
+) -> None:
     """Create the session row or fill in missing project/harness, without
     touching state, auto_notes or updated_at (an empty row is not listed as a
     previous session, see list_checkpoints)."""
@@ -605,13 +662,23 @@ def register_session(session_id: str, project: str = "", harness: str = "",
         conn.close()
 
 
-def put_checkpoint(session_id: str, state: str, project: str = "", harness: str = "",
-                   owner: str | None = None) -> dict | None:
+def put_checkpoint(
+    session_id: str,
+    state: str,
+    project: str = "",
+    harness: str = "",
+    owner: str | None = None,
+) -> dict | None:
     return _upsert_session(session_id, "state", state, project, harness, owner)
 
 
-def put_auto_notes(session_id: str, notes: str, project: str = "", harness: str = "",
-                   owner: str | None = None) -> dict | None:
+def put_auto_notes(
+    session_id: str,
+    notes: str,
+    project: str = "",
+    harness: str = "",
+    owner: str | None = None,
+) -> dict | None:
     return _upsert_session(session_id, "auto_notes", notes, project, harness, owner)
 
 
@@ -624,7 +691,9 @@ def delete_checkpoint(session_id: str, owner: str | None = None) -> bool:
         with conn:
             with conn.cursor() as cur:
                 if owner is None:
-                    cur.execute("DELETE FROM session_state WHERE session_id = %s", (session_id,))
+                    cur.execute(
+                        "DELETE FROM session_state WHERE session_id = %s", (session_id,)
+                    )
                 else:
                     cur.execute(
                         "DELETE FROM session_state WHERE session_id = %s AND owner = %s",
@@ -657,8 +726,13 @@ def get_checkpoint(session_id: str, owner: str | None = None) -> dict | None:
         conn.close()
 
 
-def list_checkpoints(project: str = "", exclude_session: str = "", limit: int = 10,
-                     harness: str = "", owner: str | None = None) -> list[dict]:
+def list_checkpoints(
+    project: str = "",
+    exclude_session: str = "",
+    limit: int = 10,
+    harness: str = "",
+    owner: str | None = None,
+) -> list[dict]:
     """Most recently updated sessions with a non-empty state, newest first.
     owner=None lists across all tenants (admin/scripts)."""
     _ensure_session_table()

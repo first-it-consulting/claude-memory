@@ -11,6 +11,7 @@ Expiry is the only NEW rejection path (revoked/expired rows) — log every
 rejection with the id segment so a mis-migrated device is one log line to
 diagnose. Audit rows are append-only; nothing here updates or deletes them.
 """
+
 import hashlib
 import hmac
 import logging
@@ -26,8 +27,10 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-TOKEN_COLUMNS = ("id, user_id, name, prefix, last4, can_admin, default_harness, "
-                 "created_at, created_by, expires_at, last_used_at, revoked_at, revoked_by")
+TOKEN_COLUMNS = (
+    "id, user_id, name, prefix, last4, can_admin, default_harness, "
+    "created_at, created_by, expires_at, last_used_at, revoked_at, revoked_by"
+)
 DEFAULT_EXPIRY_DAYS = 90
 MAX_EXPIRY_DAYS = 365
 NEVER = "infinity"
@@ -157,9 +160,14 @@ def route_id(token: str) -> str:
     return ""
 
 
-def create_token(user_id: str, name: str, created_by: str, can_admin: bool = False,
-                 expires_days: int = DEFAULT_EXPIRY_DAYS,
-                 default_harness: str = "") -> tuple[dict, str]:
+def create_token(
+    user_id: str,
+    name: str,
+    created_by: str,
+    can_admin: bool = False,
+    expires_days: int = DEFAULT_EXPIRY_DAYS,
+    default_harness: str = "",
+) -> tuple[dict, str]:
     """Mint a token. Returns (row, plaintext) — the plaintext is shown once
     and never stored. expires_days is clamped to 1..365."""
     ensure_table()
@@ -168,9 +176,15 @@ def create_token(user_id: str, name: str, created_by: str, can_admin: bool = Fal
     tid = "t" + secrets.token_hex(4)
     secret = secrets.token_urlsafe(32)
     plaintext = f"cm_{tid}_{secret}"
-    row_plain = {"id": tid, "user_id": user_id, "name": name, "prefix": f"cm_{tid}",
-                 "last4": secret[-4:], "can_admin": bool(can_admin),
-                 "default_harness": (default_harness or "").strip().lower()[:32]}
+    row_plain = {
+        "id": tid,
+        "user_id": user_id,
+        "name": name,
+        "prefix": f"cm_{tid}",
+        "last4": secret[-4:],
+        "can_admin": bool(can_admin),
+        "default_harness": (default_harness or "").strip().lower()[:32],
+    }
     conn = _db_conn()
     try:
         with conn:
@@ -180,13 +194,27 @@ def create_token(user_id: str, name: str, created_by: str, can_admin: bool = Fal
                             can_admin, default_harness, created_by, expires_at)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now() + (%s || ' days')::interval)
                         RETURNING {TOKEN_COLUMNS}""",
-                    (tid, user_id, name, row_plain["prefix"], row_plain["last4"],
-                     _hash(plaintext), bool(can_admin), row_plain["default_harness"],
-                     created_by, str(days)),
+                    (
+                        tid,
+                        user_id,
+                        name,
+                        row_plain["prefix"],
+                        row_plain["last4"],
+                        _hash(plaintext),
+                        bool(can_admin),
+                        row_plain["default_harness"],
+                        created_by,
+                        str(days),
+                    ),
                 )
                 row = dict(cur.fetchone())
-                audit("create", token_id=tid, user_id=user_id, actor=created_by,
-                      detail=f"name={name} days={days} can_admin={bool(can_admin)}")
+                audit(
+                    "create",
+                    token_id=tid,
+                    user_id=user_id,
+                    actor=created_by,
+                    detail=f"name={name} days={days} can_admin={bool(can_admin)}",
+                )
         return row, plaintext
     finally:
         conn.close()
@@ -328,7 +356,9 @@ def list_all(user_filter: str = "") -> list[dict]:
                     (user_filter,),
                 )
             else:
-                cur.execute(f"SELECT {TOKEN_COLUMNS} FROM api_tokens ORDER BY created_at DESC")
+                cur.execute(
+                    f"SELECT {TOKEN_COLUMNS} FROM api_tokens ORDER BY created_at DESC"
+                )
             return [_mask(dict(r)) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -342,8 +372,10 @@ def revoke(token_id: str, revoked_by: str, owner_user_id: str = "") -> bool:
     try:
         with conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                sql = ("UPDATE api_tokens SET revoked_at = now(), revoked_by = %s "
-                       "WHERE id = %s AND revoked_at IS NULL")
+                sql = (
+                    "UPDATE api_tokens SET revoked_at = now(), revoked_by = %s "
+                    "WHERE id = %s AND revoked_at IS NULL"
+                )
                 params: list = [revoked_by, token_id]
                 if owner_user_id:
                     sql += " AND user_id = %s"
@@ -353,7 +385,12 @@ def revoke(token_id: str, revoked_by: str, owner_user_id: str = "") -> bool:
                 row = cur.fetchone()
                 if not row:
                     return False
-                audit("revoke", token_id=row["id"], user_id=row["user_id"], actor=revoked_by)
+                audit(
+                    "revoke",
+                    token_id=row["id"],
+                    user_id=row["user_id"],
+                    actor=revoked_by,
+                )
                 return True
     finally:
         conn.close()
@@ -374,14 +411,25 @@ def revoke_for_user(user_id: str, revoked_by: str) -> int:
                 )
                 n = cur.rowcount
                 if n:
-                    audit("revoke_all", user_id=user_id, actor=revoked_by, detail=f"count={n}")
+                    audit(
+                        "revoke_all",
+                        user_id=user_id,
+                        actor=revoked_by,
+                        detail=f"count={n}",
+                    )
                 return n
     finally:
         conn.close()
 
 
-def audit(event: str, token_id: str = "", user_id: str = "", actor: str = "",
-          ip: str = "", detail: str = "") -> None:
+def audit(
+    event: str,
+    token_id: str = "",
+    user_id: str = "",
+    actor: str = "",
+    ip: str = "",
+    detail: str = "",
+) -> None:
     """Append-only audit trail. Never raises into the caller — a broken audit
     log must not break auth."""
     try:
@@ -411,11 +459,16 @@ def _mask(row: dict) -> dict:
         if exp.year < 9999:
             days_left = max(0, int((exp - now).total_seconds() / 86400))
     return {
-        "id": row["id"], "user_id": row["user_id"], "name": row["name"],
-        "display": f"{row['prefix']}…{row['last4']}", "can_admin": row["can_admin"],
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "name": row["name"],
+        "display": f"{row['prefix']}…{row['last4']}",
+        "can_admin": row["can_admin"],
         "default_harness": row["default_harness"],
-        "created_at": str(row["created_at"]), "created_by": row["created_by"],
-        "expires_at": str(exp) if exp else None, "expires_in_days": days_left,
+        "created_at": str(row["created_at"]),
+        "created_by": row["created_by"],
+        "expires_at": str(exp) if exp else None,
+        "expires_in_days": days_left,
         "last_used_at": str(row["last_used_at"]) if row["last_used_at"] else None,
         "revoked_at": str(row["revoked_at"]) if row["revoked_at"] else None,
         "revoked_by": row["revoked_by"],

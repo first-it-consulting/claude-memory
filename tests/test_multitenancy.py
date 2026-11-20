@@ -4,6 +4,7 @@ The legacy BEARER_TOKEN (conftest TOKEN) acts as tenant "default" with role
 user; tests use settings_override(admin_token=...) for the admin principal and
 create per-user API tokens through /api/users.
 """
+
 import json
 import time
 
@@ -32,7 +33,9 @@ def admin(settings_override):
 @pytest.fixture
 def alice(server, admin, api):
     """Create tenant alice with its own API token; return (id, token)."""
-    r = req(server, "POST", "/api/users", token=admin, json={"id": "alice", "name": "Alice"})
+    r = req(
+        server, "POST", "/api/users", token=admin, json={"id": "alice", "name": "Alice"}
+    )
     assert r.status_code == 201, r.text
     return "alice", r.json()["token"]
 
@@ -48,12 +51,18 @@ def bob(server, admin, api):
 # Auth / principals
 # ---------------------------------------------------------------------------
 
+
 def test_whoami_legacy_token_is_default_tenant_user(server):
     r = req(server, "GET", "/api/auth/whoami", token=TOKEN)
     body = r.json()
     assert r.status_code == 200
-    assert body == {"user_id": "default", "role": "user", "via": "legacy",
-                    "label": "legacy-token", "shared_tenant": "global"}
+    assert body == {
+        "user_id": "default",
+        "role": "user",
+        "via": "legacy",
+        "label": "legacy-token",
+        "shared_tenant": "global",
+    }
 
 
 def test_whoami_admin_token(server, admin):
@@ -69,12 +78,15 @@ def test_unknown_token_rejected(server):
 def test_api_token_authenticates_its_tenant(server, alice):
     uid, token = alice
     body = req(server, "GET", "/api/auth/whoami", token=token).json()
-    assert body["user_id"] == "alice" and body["role"] == "user" and body["via"] == "token"
+    assert (
+        body["user_id"] == "alice" and body["role"] == "user" and body["via"] == "token"
+    )
 
 
 # ---------------------------------------------------------------------------
 # /api/users (admin CRUD)
 # ---------------------------------------------------------------------------
+
 
 def test_users_crud_and_one_time_token(server, admin, alice):
     uid, token = alice
@@ -100,26 +112,50 @@ def test_users_crud_and_one_time_token(server, admin, alice):
 def test_users_api_requires_admin(server, alice):
     uid, token = alice
     assert req(server, "GET", "/api/users", token=token).status_code == 403
-    assert req(server, "POST", "/api/users", token=token, json={"id": "eve"}).status_code == 403
-    assert req(server, "GET", "/api/users", token=TOKEN).status_code == 403  # legacy is role user
+    assert (
+        req(server, "POST", "/api/users", token=token, json={"id": "eve"}).status_code
+        == 403
+    )
+    assert (
+        req(server, "GET", "/api/users", token=TOKEN).status_code == 403
+    )  # legacy is role user
 
 
 def test_users_validation(server, admin):
-    assert req(server, "POST", "/api/users", token=admin, json={"id": "global"}).status_code == 400
+    assert (
+        req(
+            server, "POST", "/api/users", token=admin, json={"id": "global"}
+        ).status_code
+        == 400
+    )
     # ids are sanitised (Bad/Id -> bad-id); nothing sanitizable -> 400
-    assert req(server, "POST", "/api/users", token=admin, json={"id": "Bad/Id!"}).status_code == 201
-    assert req(server, "POST", "/api/users", token=admin, json={"id": "!!!"}).status_code == 400
+    assert (
+        req(
+            server, "POST", "/api/users", token=admin, json={"id": "Bad/Id!"}
+        ).status_code
+        == 201
+    )
+    assert (
+        req(server, "POST", "/api/users", token=admin, json={"id": "!!!"}).status_code
+        == 400
+    )
 
 
 def test_disabled_user_token_rejected(server, admin, alice):
     uid, token = alice
-    assert req(server, "PATCH", "/api/users/alice", token=admin, json={"disabled": True}).status_code == 200
+    assert (
+        req(
+            server, "PATCH", "/api/users/alice", token=admin, json={"disabled": True}
+        ).status_code
+        == 200
+    )
     assert req(server, "GET", "/api/auth/whoami", token=token).status_code == 401
 
 
 # ---------------------------------------------------------------------------
 # Memory isolation
 # ---------------------------------------------------------------------------
+
 
 def test_list_scoped_to_own_plus_shared(server, fake_mem, alice):
     fake_mem.seed("alice fact alpha", user_id="alice")
@@ -136,38 +172,68 @@ def test_search_scoped_to_own_plus_shared(server, fake_mem, alice):
     fake_mem.seed("alice kubernetes note", user_id="alice")
     fake_mem.seed("bob kubernetes note", user_id="bob")
     uid, token = alice
-    body = req(server, "GET", "/api/memories", token=token, params={"q": "kubernetes note"}).json()
+    body = req(
+        server, "GET", "/api/memories", token=token, params={"q": "kubernetes note"}
+    ).json()
     assert [m["memory"] for m in body] == ["alice kubernetes note"]
 
 
 def test_cross_tenant_write_is_404(server, fake_mem, alice):
     rid = fake_mem.seed("bob private fact", user_id="bob")
     uid, token = alice
-    assert req(server, "PUT", f"/api/memories/{rid}", token=token, json={"memory": "hijack"}).status_code == 404
+    assert (
+        req(
+            server,
+            "PUT",
+            f"/api/memories/{rid}",
+            token=token,
+            json={"memory": "hijack"},
+        ).status_code
+        == 404
+    )
     assert req(server, "DELETE", f"/api/memories/{rid}", token=token).status_code == 404
-    assert req(server, "PATCH", f"/api/memories/{rid}/tags", token=token, json={"tags": ["x"]}).json() == {"ok": False}
+    assert req(
+        server, "PATCH", f"/api/memories/{rid}/tags", token=token, json={"tags": ["x"]}
+    ).json() == {"ok": False}
     # owner may
-    assert req(server, "DELETE", f"/api/memories/{rid}", token=token).status_code == 404  # alice != bob
+    assert (
+        req(server, "DELETE", f"/api/memories/{rid}", token=token).status_code == 404
+    )  # alice != bob
     fake_mem.seed("alice own fact", user_id="alice")  # sanity: alice can use her token
 
 
 def test_owner_can_modify_own_memory(server, fake_mem, alice):
     rid = fake_mem.seed("alice own fact", user_id="alice")
     uid, token = alice
-    assert req(server, "PUT", f"/api/memories/{rid}", token=token, json={"memory": "edited"}).status_code == 200
+    assert (
+        req(
+            server,
+            "PUT",
+            f"/api/memories/{rid}",
+            token=token,
+            json={"memory": "edited"},
+        ).status_code
+        == 200
+    )
     assert req(server, "DELETE", f"/api/memories/{rid}", token=token).status_code == 200
 
 
 def test_admin_scope_all_and_tenant_filter(server, fake_mem, admin, alice):
     fake_mem.seed("alice fact", user_id="alice")
     fake_mem.seed("bob fact", user_id="bob")
-    body = req(server, "GET", "/api/memories", token=admin, params={"scope": "all"}).json()
+    body = req(
+        server, "GET", "/api/memories", token=admin, params={"scope": "all"}
+    ).json()
     assert {"alice fact", "bob fact"} <= {m["memory"] for m in body}
-    body = req(server, "GET", "/api/memories", token=admin, params={"tenant": "bob"}).json()
+    body = req(
+        server, "GET", "/api/memories", token=admin, params={"tenant": "bob"}
+    ).json()
     assert {m["memory"] for m in body} == {"bob fact"}
     # regular user cannot ask for other tenants
     uid, token = alice
-    body = req(server, "GET", "/api/memories", token=token, params={"scope": "all"}).json()
+    body = req(
+        server, "GET", "/api/memories", token=token, params={"scope": "all"}
+    ).json()
     assert "bob fact" not in {m["memory"] for m in body}
 
 
@@ -180,16 +246,35 @@ def test_admin_can_modify_any_tenant(server, fake_mem, admin):
 # Shared space
 # ---------------------------------------------------------------------------
 
+
 def test_shared_publish_admin_only(server, admin, alice):
-    r = req(server, "POST", "/api/memories", token=admin, json={"content": "everyone should know this", "shared": True})
+    r = req(
+        server,
+        "POST",
+        "/api/memories",
+        token=admin,
+        json={"content": "everyone should know this", "shared": True},
+    )
     assert r.status_code == 200 and r.json()["queued"] is True
     uid, token = alice
-    r = req(server, "POST", "/api/memories", token=token, json={"content": "sneaky", "shared": True})
+    r = req(
+        server,
+        "POST",
+        "/api/memories",
+        token=token,
+        json={"content": "sneaky", "shared": True},
+    )
     assert r.status_code == 403
 
 
 def test_shared_publish_lands_in_global_tenant(server, admin, fake_mem):
-    req(server, "POST", "/api/memories", token=admin, json={"content": "shared fact delta", "shared": True})
+    req(
+        server,
+        "POST",
+        "/api/memories",
+        token=admin,
+        json={"content": "shared fact delta", "shared": True},
+    )
     deadline = time.time() + 10
     while time.time() < deadline:
         adds = [c for c in fake_mem.calls if c[0] == "add"]
@@ -204,9 +289,16 @@ def test_shared_publish_lands_in_global_tenant(server, admin, fake_mem):
 # Queue carries the tenant
 # ---------------------------------------------------------------------------
 
+
 def test_queued_add_lands_in_caller_tenant(server, alice, fake_mem):
     uid, token = alice
-    r = req(server, "POST", "/api/memories", token=token, json={"content": "alice queued fact"})
+    r = req(
+        server,
+        "POST",
+        "/api/memories",
+        token=token,
+        json={"content": "alice queued fact"},
+    )
     assert r.status_code == 200
     deadline = time.time() + 10
     while time.time() < deadline:
@@ -222,17 +314,25 @@ def test_queued_add_lands_in_caller_tenant(server, alice, fake_mem):
 # Sessions (checkpoints) isolation
 # ---------------------------------------------------------------------------
 
+
 def test_session_cross_tenant_invisible(server, alice, bob):
     uid_a, tok_a = alice
     uid_b, tok_b = bob
-    r = req(server, "PUT", "/api/sessions/s1", token=tok_b, json={"state": "bob working"})
+    r = req(
+        server, "PUT", "/api/sessions/s1", token=tok_b, json={"state": "bob working"}
+    )
     assert r.status_code == 200
     assert req(server, "GET", "/api/sessions/s1", token=tok_a).status_code == 404
     listing = req(server, "GET", "/api/sessions", token=tok_a).json()
     assert listing == []
     # admin sees across tenants
-    listing = req(server, "GET", "/api/sessions", token="admin-bootstrap-token",
-                  params={"scope": "all"}).json()
+    listing = req(
+        server,
+        "GET",
+        "/api/sessions",
+        token="admin-bootstrap-token",
+        params={"scope": "all"},
+    ).json()
     assert [s["session_id"] for s in listing] == ["s1"] and listing[0]["owner"] == "bob"
     # bob may delete his own; alice cannot
     assert req(server, "DELETE", "/api/sessions/s1", token=tok_a).status_code == 404
@@ -240,7 +340,13 @@ def test_session_cross_tenant_invisible(server, alice, bob):
 
 
 def test_legacy_token_keeps_default_workspace_sessions(server):
-    r = req(server, "PUT", "/api/sessions/legacy1", token=TOKEN, json={"state": "legacy state"})
+    r = req(
+        server,
+        "PUT",
+        "/api/sessions/legacy1",
+        token=TOKEN,
+        json={"state": "legacy state"},
+    )
     assert r.status_code == 200
     row = req(server, "GET", "/api/sessions/legacy1", token=TOKEN).json()
     assert row["owner"] == "default"
@@ -250,6 +356,7 @@ def test_legacy_token_keeps_default_workspace_sessions(server):
 # Admin-only views
 # ---------------------------------------------------------------------------
 
+
 def test_jobs_admin_only(server, admin):
     assert req(server, "GET", "/api/jobs", token=TOKEN).status_code == 403
     # admin gets a list (job_runs may be empty; must not be 403/404)
@@ -258,8 +365,16 @@ def test_jobs_admin_only(server, admin):
 
 
 def test_tag_rule_writes_admin_only(server):
-    assert req(server, "POST", "/api/tag-rules", token=TOKEN,
-               json={"tag": "x", "keyword": "y"}).status_code == 403
+    assert (
+        req(
+            server,
+            "POST",
+            "/api/tag-rules",
+            token=TOKEN,
+            json={"tag": "x", "keyword": "y"},
+        ).status_code
+        == 403
+    )
     assert req(server, "GET", "/api/tag-rules", token=TOKEN).status_code == 200
 
 
@@ -267,11 +382,15 @@ def test_tag_rule_writes_admin_only(server):
 # MCP tools are tenant-scoped too
 # ---------------------------------------------------------------------------
 
+
 def _rpc(server, token, method, params=None):
     r = requests.post(
         server + "/mcp",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
-                 "Accept": "application/json, text/event-stream"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
         json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}},
         timeout=20,
     )
@@ -283,7 +402,9 @@ def _rpc(server, token, method, params=None):
 
 
 def _call(server, token, name, **arguments):
-    return _rpc(server, token, "tools/call", {"name": name, "arguments": arguments})["result"]["content"][0]["text"]
+    return _rpc(server, token, "tools/call", {"name": name, "arguments": arguments})[
+        "result"
+    ]["content"][0]["text"]
 
 
 def test_mcp_get_all_scoped_to_tenant(server, fake_mem, alice):
@@ -300,17 +421,31 @@ def test_mcp_get_all_scoped_to_tenant(server, fake_mem, alice):
 def test_mcp_update_foreign_tenant_denied(server, fake_mem, alice):
     rid = fake_mem.seed("bob mcp fact", user_id="bob")
     uid, token = alice
-    assert f"No memory with id {rid}" in _call(server, token, "update_memory", memory_id=rid, content="x")
+    assert f"No memory with id {rid}" in _call(
+        server, token, "update_memory", memory_id=rid, content="x"
+    )
 
 
 def test_mcp_checkpoint_scoped(server, alice, bob):
     uid_a, tok_a = alice
     uid_b, tok_b = bob
-    out = _call(server, tok_b, "checkpoint", session_id="s-mcp", state="bob state", project="proj")
+    out = _call(
+        server,
+        tok_b,
+        "checkpoint",
+        session_id="s-mcp",
+        state="bob state",
+        project="proj",
+    )
     assert json.loads(out)["ok"] is True
     # alice cannot read or overwrite bob's session
-    assert _call(server, tok_a, "get_checkpoint", session_id="s-mcp") == "No checkpoint found."
-    assert "another workspace" in _call(server, tok_a, "checkpoint", session_id="s-mcp", state="hijack")
+    assert (
+        _call(server, tok_a, "get_checkpoint", session_id="s-mcp")
+        == "No checkpoint found."
+    )
+    assert "another workspace" in _call(
+        server, tok_a, "checkpoint", session_id="s-mcp", state="hijack"
+    )
     # bob can
     assert "bob state" in _call(server, tok_b, "get_checkpoint", session_id="s-mcp")
 
@@ -319,29 +454,48 @@ def test_mcp_checkpoint_scoped(server, alice, bob):
 # OIDC mapping (verification itself is monkeypatched — no Keycloak here)
 # ---------------------------------------------------------------------------
 
+
 def test_oidc_claims_map_to_tenant_and_admin(server, monkeypatch):
     import auth
 
-    monkeypatch.setattr(auth, "verify_jwt", lambda token: {
-        "sub": "keycloak-sub-1", "preferred_username": "carol", "email": "carol@example.com",
-        "realm_access": {"roles": ["claude-memory-admin"]}, "exp": 9999999999,
-    })
+    monkeypatch.setattr(
+        auth,
+        "verify_jwt",
+        lambda token: {
+            "sub": "keycloak-sub-1",
+            "preferred_username": "carol",
+            "email": "carol@example.com",
+            "realm_access": {"roles": ["claude-memory-admin"]},
+            "exp": 9999999999,
+        },
+    )
     from config import settings
+
     saved = settings.oidc_issuer
     settings.oidc_issuer = "https://keycloak.example/realms/lab"
     try:
         p = auth.resolve("aaa.bbb.ccc")
     finally:
         settings.oidc_issuer = saved
-    assert p is not None and p.user_id == "carol" and p.role == "admin" and p.via == "oidc"
+    assert (
+        p is not None and p.user_id == "carol" and p.role == "admin" and p.via == "oidc"
+    )
 
 
 def test_oidc_auto_create_disabled_rejects(server, monkeypatch):
     import auth
     from config import settings
-    monkeypatch.setattr(auth, "verify_jwt", lambda token: {
-        "sub": "sub-x", "preferred_username": "dave", "email": "", "exp": 9999999999,
-    })
+
+    monkeypatch.setattr(
+        auth,
+        "verify_jwt",
+        lambda token: {
+            "sub": "sub-x",
+            "preferred_username": "dave",
+            "email": "",
+            "exp": 9999999999,
+        },
+    )
     saved = (settings.oidc_issuer, settings.oidc_auto_create)
     settings.oidc_issuer = "https://keycloak.example/realms/lab"
     settings.oidc_auto_create = False

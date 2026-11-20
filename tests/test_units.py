@@ -1,4 +1,5 @@
 """Pure functions — no database or server needed."""
+
 import importlib.util
 import json
 
@@ -9,6 +10,7 @@ from conftest import HOOK_SCRIPT
 @pytest.fixture(scope="module")
 def main_mod():
     import main
+
     return main
 
 
@@ -22,10 +24,19 @@ def hook():
 
 # --- main.py formatting ------------------------------------------------------------
 
+
 def test_format_memory_line_full(main_mod):
-    r = {"id": "abc", "memory": "text", "score": 0.8123, "created_at": "2026-01-02T03:04:05",
-         "metadata": {"metadata": {"category": "project", "tags": ["a", "b"]}}}
-    assert main_mod._format_memory_line(r, with_id=True) == "[0.81] 2026-01-02 · project · #a,b · id=abc — text"
+    r = {
+        "id": "abc",
+        "memory": "text",
+        "score": 0.8123,
+        "created_at": "2026-01-02T03:04:05",
+        "metadata": {"metadata": {"category": "project", "tags": ["a", "b"]}},
+    }
+    assert (
+        main_mod._format_memory_line(r, with_id=True)
+        == "[0.81] 2026-01-02 · project · #a,b · id=abc — text"
+    )
 
 
 def test_format_memory_line_minimal(main_mod):
@@ -39,10 +50,19 @@ def test_format_memory_line_flat_metadata_and_no_score(main_mod):
 
 
 def test_format_checkpoint(main_mod):
-    row = {"session_id": "s1", "project": "p", "harness": "pi", "state": "S", "auto_notes": "A",
-           "updated_at": "2026-11-15 13:02:50.66+01:00"}
+    row = {
+        "session_id": "s1",
+        "project": "p",
+        "harness": "pi",
+        "state": "S",
+        "auto_notes": "A",
+        "updated_at": "2026-11-15 13:02:50.66+01:00",
+    }
     out = main_mod._format_checkpoint(row, "Title")
-    assert out.splitlines()[0] == "### Title (session s1 · p · pi, updated 2026-11-15 13:02)"
+    assert (
+        out.splitlines()[0]
+        == "### Title (session s1 · p · pi, updated 2026-11-15 13:02)"
+    )
     assert "S" in out and "#### Auto-captured" in out and out.endswith("A")
 
 
@@ -52,22 +72,36 @@ def test_truncate(main_mod):
     assert len(out) <= 100 and out.endswith("[truncated by claude-memory]")
 
 
-@pytest.mark.parametrize("value,default,expected", [("3", 1, 3), ("x", 1, 1), (None, 7, 7)])
+@pytest.mark.parametrize(
+    "value,default,expected", [("3", 1, 3), ("x", 1, 1), (None, 7, 7)]
+)
 def test_int_parsing(main_mod, value, default, expected):
     assert main_mod._int(value, default) == expected
 
 
-@pytest.mark.parametrize("value,default,expected", [("0.5", 1.0, 0.5), ("nan?", 1.0, 1.0), (None, 0.6, 0.6)])
+@pytest.mark.parametrize(
+    "value,default,expected", [("0.5", 1.0, 0.5), ("nan?", 1.0, 1.0), (None, 0.6, 0.6)]
+)
 def test_float_parsing(main_mod, value, default, expected):
     assert main_mod._float(value, default) == expected
 
 
 # --- memory_hook.py transcript parsing ---------------------------------------------------
 
+
 def test_text_of_variants(hook):
     assert hook._text_of("plain") == "plain"
-    assert hook._text_of([{"type": "text", "text": "a"}, {"type": "tool_use", "text": "no"},
-                          {"type": "input_text", "text": "b"}, {"text": "c"}]) == "a\nb\nc"
+    assert (
+        hook._text_of(
+            [
+                {"type": "text", "text": "a"},
+                {"type": "tool_use", "text": "no"},
+                {"type": "input_text", "text": "b"},
+                {"text": "c"},
+            ]
+        )
+        == "a\nb\nc"
+    )
     assert hook._text_of(None) == ""
 
 
@@ -131,7 +165,10 @@ def test_emit_context_skips_empty(hook, capsys):
     hook.emit_context("SessionStart", "   ")
     assert capsys.readouterr().out == ""
     hook.emit_context("SessionStart", "hi")
-    assert json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"] == "hi"
+    assert (
+        json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+        == "hi"
+    )
 
 
 # --- hook output condensing (recall / briefing) ----------------------------------
@@ -147,13 +184,18 @@ IMPORTED_FILE = (
 
 def test_condense_keeps_description_and_body_start(main_mod):
     out = main_mod._condense(IMPORTED_FILE, 200)
-    assert out.startswith("How k3s node OS updates are automated (kured + staggered upgrades) — Since 2026-11-11")
+    assert out.startswith(
+        "How k3s node OS updates are automated (kured + staggered upgrades) — Since 2026-11-11"
+    )
     assert "[origin:" not in out and "metadata:" not in out and "\n" not in out
     assert len(out) <= 200 and out.endswith("…")
 
 
 def test_condense_short_plain_text_unchanged(main_mod):
-    assert main_mod._condense("Prod uses CNPG with daily backups", 400) == "Prod uses CNPG with daily backups"
+    assert (
+        main_mod._condense("Prod uses CNPG with daily backups", 400)
+        == "Prod uses CNPG with daily backups"
+    )
 
 
 def test_format_memory_line_condenses_only_when_asked(main_mod):
@@ -164,26 +206,77 @@ def test_format_memory_line_condenses_only_when_asked(main_mod):
 
 # --- pre-compact transcript filtering ---------------------------------------------
 
+
 def test_transcript_skips_request_blobs_tool_results_and_summaries(hook, tmp_path):
     rows = [
-        {"type": "user", "message": {"role": "user", "content": "Call the claude-memory checkpoint tool please"}},
-        {"type": "api-request-blob", "message": {"role": "user", "content": [
-            {"type": "text", "text": "Call the claude-memory checkpoint tool please"},
-            {"type": "text", "text": "Tool loaded."}]}},
-        {"type": "user", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "text", "text": "Tool loaded."}]}},
-        {"type": "user", "isCompactSummary": True, "message": {"role": "user", "content": "This session is being continued from a previous conversation..."}},
-        {"type": "user", "isMeta": True, "message": {"role": "user", "content": "caveat text"}},
-        {"type": "attachment", "attachment": {"role": "user", "content": "hook output"}},
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": "Call the claude-memory checkpoint tool please",
+            },
+        },
+        {
+            "type": "api-request-blob",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Call the claude-memory checkpoint tool please",
+                    },
+                    {"type": "text", "text": "Tool loaded."},
+                ],
+            },
+        },
+        {
+            "type": "user",
+            "toolUseResult": {},
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": "Tool loaded."}],
+            },
+        },
+        {
+            "type": "user",
+            "isCompactSummary": True,
+            "message": {
+                "role": "user",
+                "content": "This session is being continued from a previous conversation...",
+            },
+        },
+        {
+            "type": "user",
+            "isMeta": True,
+            "message": {"role": "user", "content": "caveat text"},
+        },
+        {
+            "type": "attachment",
+            "attachment": {"role": "user", "content": "hook output"},
+        },
         {"type": "user", "message": {"role": "user", "content": "second request"}},
-        {"type": "user", "message": {"role": "user", "content": "Call the claude-memory checkpoint tool please"}},
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": "Call the claude-memory checkpoint tool please",
+            },
+        },
     ]
     path = tmp_path / "t.jsonl"
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     notes = hook.extract_recent_turns(str(path))
     users = [l for l in notes.splitlines() if l.startswith("- ")]
     # mentions of claude-memory are real requests; repeats collapse to the latest position
-    assert users == ["- second request", "- Call the claude-memory checkpoint tool please"]
-    assert "Tool loaded." not in notes and "caveat" not in notes and "hook output" not in notes
+    assert users == [
+        "- second request",
+        "- Call the claude-memory checkpoint tool please",
+    ]
+    assert (
+        "Tool loaded." not in notes
+        and "caveat" not in notes
+        and "hook output" not in notes
+    )
     assert "continued from a previous" not in notes
 
 
@@ -194,8 +287,8 @@ def test_norm_harness(main_mod):
     assert f("pi") == "pi"
     assert f("") == ""
     assert f("   ") == ""
-    assert f("x" * 33) == ""          # too long -> dropped
-    assert f("x" * 32) == "x" * 32    # exactly at the cap passes
+    assert f("x" * 33) == ""  # too long -> dropped
+    assert f("x" * 32) == "x" * 32  # exactly at the cap passes
     assert f("bad\x01harness") == ""  # control char -> dropped
     assert f("bell\x07") == ""
     assert f("del\x7f") == ""
@@ -203,24 +296,37 @@ def test_norm_harness(main_mod):
 
 def test_pat_route_id():
     import tokens
+
     assert tokens.route_id("cm_t1a2b3c4d_secretstuff") == "t1a2b3c4d"
-    assert tokens.route_id("cm_-Abc_D_ef") == ""        # legacy urlsafe shape
+    assert tokens.route_id("cm_-Abc_D_ef") == ""  # legacy urlsafe shape
     assert tokens.route_id("cm_nootheere") == ""
     assert tokens.route_id("notcm_x") == ""
-    assert tokens.route_id("cm_tttttttt_x") == ""       # id must be t+8 hex
-    assert tokens.route_id("cm_t12345678_") == ""       # empty secret
+    assert tokens.route_id("cm_tttttttt_x") == ""  # id must be t+8 hex
+    assert tokens.route_id("cm_t12345678_") == ""  # empty secret
 
 
 def test_pat_mask_never_exposes_and_handles_infinity():
     import datetime as dt
 
     import tokens
-    row = {"id": "t1", "user_id": "u", "name": "n", "prefix": "cm_t1", "last4": "abcd",
-           "can_admin": False, "default_harness": "", "created_at": "x", "created_by": "",
-           "expires_at": dt.datetime(9999, 12, 31, tzinfo=dt.UTC),
-           "last_used_at": None, "revoked_at": None, "revoked_by": "",
-           "token_hash": "HASHMUSTNOTLEAK"}
+
+    row = {
+        "id": "t1",
+        "user_id": "u",
+        "name": "n",
+        "prefix": "cm_t1",
+        "last4": "abcd",
+        "can_admin": False,
+        "default_harness": "",
+        "created_at": "x",
+        "created_by": "",
+        "expires_at": dt.datetime(9999, 12, 31, tzinfo=dt.UTC),
+        "last_used_at": None,
+        "revoked_at": None,
+        "revoked_by": "",
+        "token_hash": "HASHMUSTNOTLEAK",
+    }
     m = tokens._mask(row)
-    assert m["expires_in_days"] is None           # 'infinity' -> never
+    assert m["expires_in_days"] is None  # 'infinity' -> never
     assert m["display"] == "cm_t1…abcd"
     assert "HASHMUSTNOTLEAK" not in str(m)

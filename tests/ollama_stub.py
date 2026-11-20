@@ -11,6 +11,7 @@ Wire format matches mem0 2.2.1 with the ollama python client 0.6.3:
   POST /api/chat   -> {"message": {"content": "<json>"}} where the JSON is
                       mem0's extraction contract {"memory":[{"text":...}]}
 """
+
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -47,7 +48,9 @@ class Handler(BaseHTTPRequestHandler):
             items = inp if isinstance(inp, list) else [inp]
             self._send({"embeddings": [VEC for _ in items]})
         elif self.path.startswith("/api/chat"):
-            self._send({"message": {"role": "assistant", "content": EXTRACTION}, "done": True})
+            self._send(
+                {"message": {"role": "assistant", "content": EXTRACTION}, "done": True}
+            )
         elif self.path.startswith("/api/generate"):
             self._send({"response": EXTRACTION, "done": True})
         elif self.path.startswith("/api/pull"):

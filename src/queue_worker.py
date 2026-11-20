@@ -11,6 +11,7 @@ All writes therefore go through:
   * a queue — Redis (durable) when REDIS_URL is set, otherwise a bounded
     in-process asyncio.Queue — consumed by one background task.
 """
+
 import asyncio
 import functools
 import json
@@ -50,13 +51,16 @@ def _summarize(result) -> str:
 async def run_write(fn, *args, **kwargs):
     """Run a blocking mem0 write on the single writer thread."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_write_executor, functools.partial(fn, *args, **kwargs))
+    return await loop.run_in_executor(
+        _write_executor, functools.partial(fn, *args, **kwargs)
+    )
 
 
 async def _get_client():
     global _client
     if _client is None:
         import redis.asyncio as aioredis
+
         _client = aioredis.from_url(settings.redis_url, decode_responses=True)
     return _client
 
@@ -75,8 +79,14 @@ async def queue_depth() -> int:
     return _get_local_queue().qsize()
 
 
-async def enqueue(content: str, agent_id: str, infer: bool, category: str, tags: list,
-                  user_id: str = "") -> str:
+async def enqueue(
+    content: str,
+    agent_id: str,
+    infer: bool,
+    category: str,
+    tags: list,
+    user_id: str = "",
+) -> str:
     job_id = str(uuid.uuid4())
     job = {
         "job_id": job_id,
@@ -119,7 +129,11 @@ async def _next_job() -> dict | None:
 
 async def _run_worker():
     import memory as mem_store
-    logger.info("add_memory worker started (%s)", "redis" if settings.redis_url else "in-process")
+
+    logger.info(
+        "add_memory worker started (%s)",
+        "redis" if settings.redis_url else "in-process",
+    )
     while True:
         job = None
         try:
@@ -135,7 +149,9 @@ async def _run_worker():
                 category=job.get("category", ""),
                 tags=job.get("tags", []),
             )
-            logger.info("Processed queue job %s: %s", job.get("job_id", "?"), _summarize(result))
+            logger.info(
+                "Processed queue job %s: %s", job.get("job_id", "?"), _summarize(result)
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -143,6 +159,8 @@ async def _run_worker():
             job = job or {}
             logger.exception(
                 "Queue job %s failed (dropped): agent_id=%r content_len=%d",
-                job.get("job_id", "?"), job.get("agent_id", ""), len(job.get("content", "") or ""),
+                job.get("job_id", "?"),
+                job.get("agent_id", ""),
+                len(job.get("content", "") or ""),
             )
             await asyncio.sleep(1)

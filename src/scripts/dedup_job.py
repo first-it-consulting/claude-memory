@@ -21,6 +21,7 @@ Usage:
   python dedup_job.py [--dry-run] [--phase1-only] [--phase2-only] [--threshold 0.92]
   TAGGING_MODE=llm python dedup_job.py   # run LLM tagging phase
 """
+
 from __future__ import annotations
 
 import argparse
@@ -63,6 +64,7 @@ LLM_TAG_BATCH = 20
 # ---------------------------------------------------------------------------
 # Database helpers
 # ---------------------------------------------------------------------------
+
 
 def connect() -> psycopg2.extensions.connection:
     conn = psycopg2.connect(DATABASE_URL)
@@ -180,6 +182,7 @@ def delete_rows(cur: psycopg2.extensions.cursor, row_ids: list[uuid.UUID]) -> No
 # Metadata helpers (mirrors _extract_meta in main.py)
 # ---------------------------------------------------------------------------
 
+
 def _extract_meta(payload: dict) -> dict:
     meta = payload.get("metadata") or {}
     inner = meta.get("metadata") if isinstance(meta.get("metadata"), dict) else None
@@ -226,15 +229,16 @@ def load_tag_list(cur) -> list[str]:
 # Phase 0 — LLM tagging
 # ---------------------------------------------------------------------------
 
+
 def ollama_assign_tags(text: str, available_tags: list[str]) -> list[str]:
     """Ask Ollama which tags apply to a memory. Returns list of tag names."""
     tag_list = ", ".join(available_tags)
     prompt = (
         f"You are a memory tagging system. Given a memory entry, select which tags apply.\n"
         f"Available tags: {tag_list}\n\n"
-        f"Memory: \"{text}\"\n\n"
+        f'Memory: "{text}"\n\n'
         f"Reply with ONLY a JSON array of matching tag names, or [] if none apply.\n"
-        f"Example: [\"prod-k8s\", \"cnpg\"]\n"
+        f'Example: ["prod-k8s", "cnpg"]\n'
         f"Array:"
     )
     try:
@@ -250,7 +254,7 @@ def ollama_assign_tags(text: str, available_tags: list[str]) -> list[str]:
         end = raw.rfind("]")
         if start == -1 or end == -1:
             return []
-        candidates = json.loads(raw[start:end + 1])
+        candidates = json.loads(raw[start : end + 1])
         valid = set(available_tags)
         return [t for t in candidates if isinstance(t, str) and t in valid]
     except Exception as e:
@@ -263,7 +267,10 @@ def phase0_llm_tagging(conn, dry_run: bool) -> int:
         log.info("Phase 0: skipped (TAGGING_MODE=keyword)")
         return 0
 
-    log.info("Phase 0: LLM tagging (TAGGING_MODE=%s) — reviews all memories not yet llm_reviewed", TAGGING_MODE)
+    log.info(
+        "Phase 0: LLM tagging (TAGGING_MODE=%s) — reviews all memories not yet llm_reviewed",
+        TAGGING_MODE,
+    )
     run_id = start_job_phase(conn, "llm-tagging")
     scanned = 0
     changed = 0
@@ -283,12 +290,18 @@ def phase0_llm_tagging(conn, dry_run: bool) -> int:
         # Process any memory not yet reviewed by LLM — includes keyword-tagged ones
         pending = []
         for row in rows:
-            payload = dict(row["payload"]) if isinstance(row["payload"], dict) else json.loads(row["payload"])
+            payload = (
+                dict(row["payload"])
+                if isinstance(row["payload"], dict)
+                else json.loads(row["payload"])
+            )
             meta = _extract_meta(payload)
             if not meta.get("llm_reviewed"):
                 text = payload.get("data", "").strip()
                 if text:
-                    pending.append({"id": str(row["id"]), "payload": payload, "text": text})
+                    pending.append(
+                        {"id": str(row["id"]), "payload": payload, "text": text}
+                    )
 
         log.info("Found %d memories not yet llm_reviewed", len(pending))
         scanned = len(pending)
@@ -298,9 +311,17 @@ def phase0_llm_tagging(conn, dry_run: bool) -> int:
             existing = _extract_meta(item["payload"]).get("tags") or []
             merged = sorted(set(existing) | set(llm_tags))
             added = sorted(set(llm_tags) - set(existing))
-            log.info("  %s → existing=%s llm=%s added=%s", item["text"][:60], existing, llm_tags, added)
+            log.info(
+                "  %s → existing=%s llm=%s added=%s",
+                item["text"][:60],
+                existing,
+                llm_tags,
+                added,
+            )
             if not dry_run:
-                updated_payload = _merge_tags_and_mark_reviewed(item["payload"], llm_tags)
+                updated_payload = _merge_tags_and_mark_reviewed(
+                    item["payload"], llm_tags
+                )
                 with conn.cursor() as cur:
                     cur.execute(
                         f"UPDATE {MEM_TABLE} SET payload = %s WHERE id = %s",
@@ -318,7 +339,9 @@ def phase0_llm_tagging(conn, dry_run: bool) -> int:
 
     log.info(
         "Phase 0 done: scanned=%d new_tags_added_to=%d%s",
-        scanned, changed, " (dry run)" if dry_run else "",
+        scanned,
+        changed,
+        " (dry run)" if dry_run else "",
     )
     return changed
 
@@ -326,6 +349,7 @@ def phase0_llm_tagging(conn, dry_run: bool) -> int:
 # ---------------------------------------------------------------------------
 # Phase 1 — Hash-based exact dedup
 # ---------------------------------------------------------------------------
+
 
 def phase1_hash_dedup(conn, dry_run: bool) -> int:
     log.info("Phase 1: hash-based exact dedup")
@@ -364,7 +388,9 @@ def phase1_hash_dedup(conn, dry_run: bool) -> int:
             if not dry_run:
                 conn.commit()
 
-        finish_job_phase(conn, run_id, "completed", scanned=len(clusters), changed=removed)
+        finish_job_phase(
+            conn, run_id, "completed", scanned=len(clusters), changed=removed
+        )
     except Exception as e:
         conn.rollback()
         finish_job_phase(conn, run_id, "failed", error=str(e))
@@ -377,6 +403,7 @@ def phase1_hash_dedup(conn, dry_run: bool) -> int:
 # ---------------------------------------------------------------------------
 # Phase 2 — Semantic near-dedup via pgvector
 # ---------------------------------------------------------------------------
+
 
 def find_semantic_clusters(
     cur: psycopg2.extensions.cursor, threshold: float
@@ -443,7 +470,11 @@ def find_semantic_clusters(
 def _strip_preamble(text: str) -> str:
     """Drop a leading 'Memory:' / 'Merged memory:' / 'Here is ...:' line."""
     lines = (text or "").strip().splitlines()
-    while lines and re.fullmatch(r"\s*(\*\*)?((merged|combined|final)\s+)?memory(\s+text)?:?(\*\*)?:?\s*|\s*here is.*:\s*", lines[0], re.IGNORECASE):
+    while lines and re.fullmatch(
+        r"\s*(\*\*)?((merged|combined|final)\s+)?memory(\s+text)?:?(\*\*)?:?\s*|\s*here is.*:\s*",
+        lines[0],
+        re.IGNORECASE,
+    ):
         lines = lines[1:]
     # drop the model's own remarks, e.g. "- (no specific date mentioned in both memories)"
     lines = [l for l in lines if not re.fullmatch(r"\s*(?:[-*]\s*)?\([^()]*\)\s*", l)]
@@ -451,7 +482,7 @@ def _strip_preamble(text: str) -> str:
 
 
 def ollama_merge(texts: list[str]) -> str | None:
-    numbered = "\n\n".join(f"Memory {i+1}:\n{t}" for i, t in enumerate(texts))
+    numbered = "\n\n".join(f"Memory {i + 1}:\n{t}" for i, t in enumerate(texts))
     prompt = (
         f"You have {len(texts)} similar memory entries. "
         "Produce a single, comprehensive merged memory that captures all unique information. "
@@ -474,8 +505,8 @@ def ollama_merge(texts: list[str]) -> str | None:
 
 
 _FACT_RE = re.compile(
-    r"[\w.~-]*/[\w./-]+"       # paths, URLs, repo names
-    r"|\b\w*\d[\w.:-]*"        # numbers, versions, times, ids
+    r"[\w.~-]*/[\w./-]+"  # paths, URLs, repo names
+    r"|\b\w*\d[\w.:-]*"  # numbers, versions, times, ids
 )
 
 
@@ -483,7 +514,9 @@ def fact_tokens(text: str) -> set[str]:
     """Concrete details an LLM merge must not drop or alter: numbers, versions,
     times, paths. llama3.2 has been seen rewriting '7.7.28->10.7.4 (outdated)'
     into an 'upgrade', so a merge is accepted only if all of these survive."""
-    return {t.strip(".,;:()[]'\"-").lower() for t in _FACT_RE.findall(text or "")} - {""}
+    return {t.strip(".,;:()[]'\"-").lower() for t in _FACT_RE.findall(text or "")} - {
+        ""
+    }
 
 
 def words(text: str) -> set[str]:
@@ -511,15 +544,20 @@ def merge_is_faithful(merged: str, texts: list[str]) -> bool:
 def delete_memory_direct(memory_id: str) -> None:
     try:
         import memory as mstore  # imported by store_memory_direct before this runs
+
         mstore.delete(memory_id)
     except Exception as e:
         log.warning("could not remove merged memory %s: %s", memory_id, e)
 
 
-def store_memory_direct(content: str, agent_id: str = "", category: str = "",
-                        tags: list | None = None,
-                        extra_metadata: dict | None = None,
-                        user_id: str | None = None) -> str | None:
+def store_memory_direct(
+    content: str,
+    agent_id: str = "",
+    category: str = "",
+    tags: list | None = None,
+    extra_metadata: dict | None = None,
+    user_id: str | None = None,
+) -> str | None:
     """Store the merged memory verbatim, in-process (the job runs in the server
     image and gets the server's env). Returns the new id, or None — callers must
     then keep the originals. (The old MCP-over-HTTP call could not parse the
@@ -530,9 +568,15 @@ def store_memory_direct(content: str, agent_id: str = "", category: str = "",
             sys.path.insert(0, src)
         import memory as mstore  # server module
 
-        result = mstore.add(content, user_id=user_id, agent_id=agent_id, infer=False,
-                            category=category, tags=tags or [],
-                            extra_metadata=extra_metadata)
+        result = mstore.add(
+            content,
+            user_id=user_id,
+            agent_id=agent_id,
+            infer=False,
+            category=category,
+            tags=tags or [],
+            extra_metadata=extra_metadata,
+        )
         results = (result or {}).get("results") or []
         return results[0].get("id") if results else None
     except Exception as e:
@@ -559,8 +603,7 @@ def phase2_semantic_dedup(conn, threshold: float, dry_run: bool) -> int:
                 rows = cur.fetchall()
 
                 categories = [
-                    (_extract_meta(r["payload"]).get("category") or "")
-                    for r in rows
+                    (_extract_meta(r["payload"]).get("category") or "") for r in rows
                 ]
                 if len(set(categories)) > 1:
                     log.info("Skipping cross-category cluster: %s", set(categories))
@@ -572,7 +615,14 @@ def phase2_semantic_dedup(conn, threshold: float, dry_run: bool) -> int:
                     continue
                 texts = [r["payload"]["data"] for r in rows]
                 metas = [_extract_meta(r["payload"]) for r in rows]
-                tags = sorted({t for m in metas for t in (m.get("tags") or []) if isinstance(t, str)})
+                tags = sorted(
+                    {
+                        t
+                        for m in metas
+                        for t in (m.get("tags") or [])
+                        if isinstance(t, str)
+                    }
+                )
                 agent = rows[0]["payload"].get("agent_id") or ""
                 clusters_seen += 1
 
@@ -580,15 +630,23 @@ def phase2_semantic_dedup(conn, threshold: float, dry_run: bool) -> int:
                 if keep is not None:
                     # One entry already says everything: keep it as is, drop the rest.
                     drop = [r["id"] for i, r in enumerate(rows) if i != keep]
-                    log.info("Cluster of %d: keeping %s verbatim", len(rows), rows[keep]["id"])
+                    log.info(
+                        "Cluster of %d: keeping %s verbatim",
+                        len(rows),
+                        rows[keep]["id"],
+                    )
                     if not dry_run:
-                        archive_rows(cur, drop, "semantic-dedup", merged_into_id=rows[keep]["id"])
+                        archive_rows(
+                            cur, drop, "semantic-dedup", merged_into_id=rows[keep]["id"]
+                        )
                         delete_rows(cur, drop)
                         conn.commit()
                     merged += len(drop)
                     continue
 
-                log.info("Merging cluster of %d (category=%r)", len(texts), cluster_category)
+                log.info(
+                    "Merging cluster of %d (category=%r)", len(texts), cluster_category
+                )
                 if dry_run:
                     merged += len(rows)
                     continue
@@ -602,9 +660,13 @@ def phase2_semantic_dedup(conn, threshold: float, dry_run: bool) -> int:
                 # Clusters never span tenants (see find_semantic_clusters), so
                 # the merged memory stays in the cluster's workspace.
                 cluster_user = rows[0]["payload"].get("user_id")
-                new_id = store_memory_direct(merged_text, agent_id=agent,
-                                             category=cluster_category, tags=tags,
-                                             user_id=cluster_user)
+                new_id = store_memory_direct(
+                    merged_text,
+                    agent_id=agent,
+                    category=cluster_category,
+                    tags=tags,
+                    user_id=cluster_user,
+                )
                 if not new_id:
                     log.warning("Storing merged memory failed — keeping originals")
                     continue
@@ -615,11 +677,15 @@ def phase2_semantic_dedup(conn, threshold: float, dry_run: bool) -> int:
                     conn.commit()
                 except Exception:
                     conn.rollback()
-                    delete_memory_direct(new_id)  # originals stay; don't leave a duplicate
+                    delete_memory_direct(
+                        new_id
+                    )  # originals stay; don't leave a duplicate
                     raise
                 merged += len(rows)
 
-        finish_job_phase(conn, run_id, "completed", scanned=clusters_seen, changed=merged)
+        finish_job_phase(
+            conn, run_id, "completed", scanned=clusters_seen, changed=merged
+        )
     except Exception as e:
         conn.rollback()
         finish_job_phase(conn, run_id, "failed", error=str(e))
@@ -627,7 +693,8 @@ def phase2_semantic_dedup(conn, threshold: float, dry_run: bool) -> int:
 
     log.info(
         "Phase 2 done: processed %d%s",
-        merged, " (dry run)" if dry_run else "",
+        merged,
+        " (dry run)" if dry_run else "",
     )
     return merged
 
@@ -636,16 +703,20 @@ def phase2_semantic_dedup(conn, threshold: float, dry_run: bool) -> int:
 # Checkpoint promotion
 # ---------------------------------------------------------------------------
 
+
 def _mstore():
     """The server's memory module (the job runs in the server image)."""
     src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
     if src not in sys.path:
         sys.path.insert(0, src)
     import memory as mstore
+
     return mstore
 
 
-def find_duplicate(text: str, threshold: float, user_id: str | None = None) -> float | None:
+def find_duplicate(
+    text: str, threshold: float, user_id: str | None = None
+) -> float | None:
     """Best similarity of an existing memory to `text` if >= threshold, else None.
     Raises when the search itself fails, so nothing is promoted blind.
     Searches the owning tenant (plus the shared space), never other tenants."""
@@ -658,7 +729,9 @@ def promotable_sessions(conn, idle_hours: float) -> list[dict]:
     """Finished sessions (idle for idle_hours) with a checkpoint that was not
     promoted yet, or that changed since it was promoted."""
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-        cur.execute("ALTER TABLE session_state ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMPTZ")
+        cur.execute(
+            "ALTER TABLE session_state ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMPTZ"
+        )
         cur.execute(
             """SELECT session_id, owner, project, harness, state, updated_at
                FROM session_state
@@ -673,16 +746,24 @@ def promotable_sessions(conn, idle_hours: float) -> list[dict]:
     return rows
 
 
-def phase_promote_checkpoints(conn, dry_run: bool, mode: str = PROMOTE_MODE,
-                              idle_hours: float = PROMOTE_IDLE_HOURS,
-                              threshold: float = PROMOTE_DUP_THRESHOLD) -> int:
+def phase_promote_checkpoints(
+    conn,
+    dry_run: bool,
+    mode: str = PROMOTE_MODE,
+    idle_hours: float = PROMOTE_IDLE_HOURS,
+    threshold: float = PROMOTE_DUP_THRESHOLD,
+) -> int:
     """Copy Decisions / Dead ends of finished sessions into long-term memory,
     verbatim, tagged auto-promoted. dry-run writes only the job_runs report."""
     if mode == "off":
         log.info("Checkpoint promotion: skipped (PROMOTE_MODE=off)")
         return 0
     dry = dry_run or mode != "on"
-    log.info("Checkpoint promotion (%s, idle >= %.0fh)", "dry run" if dry else "on", idle_hours)
+    log.info(
+        "Checkpoint promotion (%s, idle >= %.0fh)",
+        "dry run" if dry else "on",
+        idle_hours,
+    )
     run_id = start_job_phase(conn, "checkpoint-promotion")
     promoted, sessions, report = 0, [], []
     try:
@@ -694,15 +775,23 @@ def phase_promote_checkpoints(conn, dry_run: bool, mode: str = PROMOTE_MODE,
                 if not dry:
                     _mark_promoted(conn, s["session_id"])
                 continue
-            owner = s.get("owner") or "default"  # promoted lines land in the session's workspace
-            report.append(f"## {s['project'] or '-'} · {s['harness'] or '-'} · session {s['session_id']} ({owner})")
+            owner = (
+                s.get("owner") or "default"
+            )  # promoted lines land in the session's workspace
+            report.append(
+                f"## {s['project'] or '-'} · {s['harness'] or '-'} · session {s['session_id']} ({owner})"
+            )
             for c in kept:
                 key = (owner, c["text"].lower())
                 if key in seen:
-                    report.append(f"  skip (same line in another session): {c['content']}")
+                    report.append(
+                        f"  skip (same line in another session): {c['content']}"
+                    )
                     continue
                 seen.add(key)
-                dup = find_duplicate(c["content"], threshold, owner) or find_duplicate(c["text"], threshold, owner)
+                dup = find_duplicate(c["content"], threshold, owner) or find_duplicate(
+                    c["text"], threshold, owner
+                )
                 if dup is not None:
                     report.append(f"  skip (already known, {dup:.2f}): {c['content']}")
                     continue
@@ -711,9 +800,16 @@ def phase_promote_checkpoints(conn, dry_run: bool, mode: str = PROMOTE_MODE,
                     promoted += 1
                     continue
                 new_id = store_memory_direct(
-                    c["content"], agent_id=s["harness"] or "", category="project", tags=c["tags"],
-                    extra_metadata={"source": "checkpoint", "session_id": s["session_id"]},
-                    user_id=owner)
+                    c["content"],
+                    agent_id=s["harness"] or "",
+                    category="project",
+                    tags=c["tags"],
+                    extra_metadata={
+                        "source": "checkpoint",
+                        "session_id": s["session_id"],
+                    },
+                    user_id=owner,
+                )
                 if not new_id:
                     raise RuntimeError(f"storing failed: {c['content'][:80]}")
                 report.append(f"  promoted: {c['content']}")
@@ -722,22 +818,42 @@ def phase_promote_checkpoints(conn, dry_run: bool, mode: str = PROMOTE_MODE,
                 report.append(f"  ignored (too short or session-only): {text}")
             if not dry:
                 _mark_promoted(conn, s["session_id"])
-        header = (f"{'DRY RUN — nothing stored. Set PROMOTE_MODE=on to promote.' if dry else 'Promoted.'}"
-                  f" Sessions idle >= {idle_hours:.0f}h: {len(sessions)}.")
-        finish_job_phase(conn, run_id, "completed", scanned=len(sessions), changed=promoted,
-                         details="\n".join([header, ""] + report)[:20000])
+        header = (
+            f"{'DRY RUN — nothing stored. Set PROMOTE_MODE=on to promote.' if dry else 'Promoted.'}"
+            f" Sessions idle >= {idle_hours:.0f}h: {len(sessions)}."
+        )
+        finish_job_phase(
+            conn,
+            run_id,
+            "completed",
+            scanned=len(sessions),
+            changed=promoted,
+            details="\n".join([header, ""] + report)[:20000],
+        )
     except Exception as e:
         conn.rollback()
-        finish_job_phase(conn, run_id, "failed", scanned=len(sessions), changed=promoted,
-                         error=str(e), details="\n".join(report)[:20000] or None)
+        finish_job_phase(
+            conn,
+            run_id,
+            "failed",
+            scanned=len(sessions),
+            changed=promoted,
+            error=str(e),
+            details="\n".join(report)[:20000] or None,
+        )
         log.error("Checkpoint promotion failed: %s", e)
-    log.info("Checkpoint promotion done: %d line(s)%s", promoted, " (dry run)" if dry else "")
+    log.info(
+        "Checkpoint promotion done: %d line(s)%s", promoted, " (dry run)" if dry else ""
+    )
     return promoted
 
 
 def _mark_promoted(conn, session_id: str) -> None:
     with conn.cursor() as cur:
-        cur.execute("UPDATE session_state SET promoted_at = now() WHERE session_id = %s", (session_id,))
+        cur.execute(
+            "UPDATE session_state SET promoted_at = now() WHERE session_id = %s",
+            (session_id,),
+        )
     conn.commit()
 
 
@@ -745,12 +861,15 @@ def _mark_promoted(conn, session_id: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Memory deduplication job")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--phase1-only", action="store_true")
     parser.add_argument("--phase2-only", action="store_true")
-    parser.add_argument("--tagging-only", action="store_true", help="Only run LLM tagging phase")
+    parser.add_argument(
+        "--tagging-only", action="store_true", help="Only run LLM tagging phase"
+    )
     parser.add_argument("--threshold", type=float, default=DEFAULT_SEMANTIC_THRESHOLD)
     args = parser.parse_args()
 
@@ -760,7 +879,10 @@ def main() -> None:
 
     log.info(
         "Starting job (dry_run=%s, threshold=%.2f, tagging_mode=%s, promote_mode=%s)",
-        args.dry_run, args.threshold, TAGGING_MODE, PROMOTE_MODE,
+        args.dry_run,
+        args.threshold,
+        TAGGING_MODE,
+        PROMOTE_MODE,
     )
 
     conn = connect()

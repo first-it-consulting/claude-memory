@@ -20,6 +20,7 @@ Design rule: a memory hook must never break or stall the harness. Every error
 is swallowed (logged to stderr) and the script exits 0 with no output.
 Stdlib only.
 """
+
 from __future__ import annotations
 
 import json
@@ -48,7 +49,12 @@ def load_config() -> dict:
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
                 cfg[k.strip().removeprefix("export ").strip()] = v.strip().strip("'\"")
-    for k in ("AGENT_MEMORY_URL", "AGENT_MEMORY_TOKEN", "AGENT_MEMORY_PROJECT", "AGENT_MEMORY_RECALL"):
+    for k in (
+        "AGENT_MEMORY_URL",
+        "AGENT_MEMORY_TOKEN",
+        "AGENT_MEMORY_PROJECT",
+        "AGENT_MEMORY_RECALL",
+    ):
         if os.environ.get(k):
             cfg[k] = os.environ[k]
     return cfg
@@ -61,7 +67,9 @@ def project_name(cwd: str, cfg: dict) -> str:
     try:
         top = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=2,
+            capture_output=True,
+            text=True,
+            timeout=2,
         ).stdout.strip()
         if top:
             return Path(top).name
@@ -70,27 +78,45 @@ def project_name(cwd: str, cfg: dict) -> str:
     return Path(cwd).name
 
 
-def request(cfg: dict, method: str, path: str, harness: str, timeout: float,
-            params: dict | None = None, body: dict | None = None) -> dict:
+def request(
+    cfg: dict,
+    method: str,
+    path: str,
+    harness: str,
+    timeout: float,
+    params: dict | None = None,
+    body: dict | None = None,
+) -> dict:
     url = cfg["AGENT_MEMORY_URL"].rstrip("/") + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method, headers={
-        "Authorization": f"Bearer {cfg['AGENT_MEMORY_TOKEN']}",
-        "Content-Type": "application/json",
-        "X-Agent-ID": harness,
-    })
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {cfg['AGENT_MEMORY_TOKEN']}",
+            "Content-Type": "application/json",
+            "X-Agent-ID": harness,
+        },
+    )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read() or b"{}")
 
 
 def emit_context(event_name: str, context: str) -> None:
     if context.strip():
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": event_name,
-            "additionalContext": context,
-        }}))
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": event_name,
+                        "additionalContext": context,
+                    }
+                }
+            )
+        )
 
 
 # --- transcript extraction (pre-compact) -----------------------------------
@@ -98,13 +124,19 @@ def emit_context(event_name: str, context: str) -> None:
 # Codex: {"type":"response_item","payload":{"type":"message",...}}). Walk every
 # JSON line generically and pick up {role, content} message objects.
 
+
 def _text_of(content) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
         parts = []
         for item in content:
-            if isinstance(item, dict) and item.get("type") in (None, "text", "input_text", "output_text"):
+            if isinstance(item, dict) and item.get("type") in (
+                None,
+                "text",
+                "input_text",
+                "output_text",
+            ):
                 if isinstance(item.get("text"), str):
                     parts.append(item["text"])
         return "\n".join(parts)
@@ -131,9 +163,21 @@ def _find_messages(obj, out: list) -> None:
 # request snapshots ("api-request-blob"), which repeat earlier messages plus
 # injected reminders and tool results; reading them produced duplicates and
 # entries like "Tool loaded.".
-_SKIP_LINE_TYPES = {"attachment", "system", "summary", "queue-operation", "last-prompt",
-                    "session-owner", "atis-latch", "tools-used", "cost-state", "mode",
-                    "event_msg", "turn_context", "session_meta"}
+_SKIP_LINE_TYPES = {
+    "attachment",
+    "system",
+    "summary",
+    "queue-operation",
+    "last-prompt",
+    "session-owner",
+    "atis-latch",
+    "tools-used",
+    "cost-state",
+    "mode",
+    "event_msg",
+    "turn_context",
+    "session_meta",
+}
 
 
 def _is_turn_line(obj) -> bool:
@@ -143,7 +187,12 @@ def _is_turn_line(obj) -> bool:
     if isinstance(t, str) and (t in _SKIP_LINE_TYPES or t.startswith("api-request")):
         return False
     # Claude Code flags: compaction summary, meta caveats, tool results, subagents.
-    if obj.get("isCompactSummary") or obj.get("isMeta") or obj.get("isSidechain") or "toolUseResult" in obj:
+    if (
+        obj.get("isCompactSummary")
+        or obj.get("isMeta")
+        or obj.get("isSidechain")
+        or "toolUseResult" in obj
+    ):
         return False
     return True
 
@@ -158,7 +207,12 @@ def _is_noise(role: str, text: str) -> bool:
         or t.startswith("This session is being continued from a previous conversation")
         # our own injected output, when a harness logs it as a user message
         # (exact headers only: a user mentioning claude-memory is a real request)
-        or t.startswith(("## Memory briefing (claude-memory)", "### Possibly relevant memories (claude-memory"))
+        or t.startswith(
+            (
+                "## Memory briefing (claude-memory)",
+                "### Possibly relevant memories (claude-memory",
+            )
+        )
     )
 
 
@@ -191,7 +245,9 @@ def extract_recent_turns(transcript_path: str) -> str:
             continue
         if _is_turn_line(obj):
             _find_messages(obj, messages)
-    users = _dedupe_keep_last([t for r, t in messages if r == "user" and not _is_noise(r, t)])[-MAX_USER_TURNS:]
+    users = _dedupe_keep_last(
+        [t for r, t in messages if r == "user" and not _is_noise(r, t)]
+    )[-MAX_USER_TURNS:]
     assistants = [t for r, t in messages if r == "assistant"][-MAX_ASSISTANT_TURNS:]
     if not users and not assistants:
         return ""
@@ -205,24 +261,38 @@ def extract_recent_turns(transcript_path: str) -> str:
 
 # --- event handlers ----------------------------------------------------------
 
+
 def on_session_start(ev: dict, cfg: dict, harness: str) -> None:
     source = ev.get("source") or "startup"
     if source == "clear":
         source = "startup"
-    res = request(cfg, "GET", "/api/hooks/briefing", harness, TIMEOUTS["session-start"], params={
-        "session_id": ev.get("session_id", ""),
-        "project": project_name(ev.get("cwd", ""), cfg),
-        "source": source,
-        "harness": harness,
-    })
+    res = request(
+        cfg,
+        "GET",
+        "/api/hooks/briefing",
+        harness,
+        TIMEOUTS["session-start"],
+        params={
+            "session_id": ev.get("session_id", ""),
+            "project": project_name(ev.get("cwd", ""), cfg),
+            "source": source,
+            "harness": harness,
+        },
+    )
     emit_context("SessionStart", res.get("context", ""))
 
 
 def on_prompt(ev: dict, cfg: dict, harness: str) -> None:
     if cfg.get("AGENT_MEMORY_RECALL", "1") == "0":
         return
-    res = request(cfg, "GET", "/api/hooks/recall", harness, TIMEOUTS["prompt"],
-                  params={"q": (ev.get("prompt") or "")[:1000]})
+    res = request(
+        cfg,
+        "GET",
+        "/api/hooks/recall",
+        harness,
+        TIMEOUTS["prompt"],
+        params={"q": (ev.get("prompt") or "")[:1000]},
+    )
     emit_context("UserPromptSubmit", res.get("context", ""))
 
 
@@ -230,15 +300,26 @@ def on_pre_compact(ev: dict, cfg: dict, harness: str) -> None:
     notes = extract_recent_turns(ev.get("transcript_path", ""))
     if not notes or not ev.get("session_id"):
         return
-    request(cfg, "POST", "/api/hooks/precompact", harness, TIMEOUTS["pre-compact"], body={
-        "session_id": ev["session_id"],
-        "project": project_name(ev.get("cwd", ""), cfg),
-        "harness": harness,
-        "notes": notes,
-    })
+    request(
+        cfg,
+        "POST",
+        "/api/hooks/precompact",
+        harness,
+        TIMEOUTS["pre-compact"],
+        body={
+            "session_id": ev["session_id"],
+            "project": project_name(ev.get("cwd", ""), cfg),
+            "harness": harness,
+            "notes": notes,
+        },
+    )
 
 
-HANDLERS = {"session-start": on_session_start, "prompt": on_prompt, "pre-compact": on_pre_compact}
+HANDLERS = {
+    "session-start": on_session_start,
+    "prompt": on_prompt,
+    "pre-compact": on_pre_compact,
+}
 
 
 def main() -> int:

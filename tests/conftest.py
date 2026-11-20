@@ -11,6 +11,7 @@ needed). Point TEST_DATABASE_URL at a disposable database, e.g.
 Without TEST_DATABASE_URL the DB-backed tests are skipped — unless
 REQUIRE_DB=1 (set in CI), which turns the skip into a failure.
 """
+
 from __future__ import annotations
 
 import os
@@ -42,6 +43,7 @@ def _db_reachable() -> bool:
         return False
     try:
         import psycopg2
+
         psycopg2.connect(DB_URL, connect_timeout=3).close()
         return True
     except Exception:
@@ -98,7 +100,9 @@ def server(fake_mem):
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    config = uvicorn.Config(main.app, host="127.0.0.1", port=port, log_level="warning", lifespan="on")
+    config = uvicorn.Config(
+        main.app, host="127.0.0.1", port=port, log_level="warning", lifespan="on"
+    )
     srv = uvicorn.Server(config)
     thread = threading.Thread(target=srv.run, daemon=True)
     thread.start()
@@ -120,6 +124,7 @@ def _clean_sessions(request):
 
         import memory as mem_store
         import users as users_store
+
         mem_store._ensure_session_table()
         users_store.ensure_table()
         conn = psycopg2.connect(DB_URL)
@@ -135,6 +140,7 @@ def _clean_sessions(request):
 def settings_override():
     """Temporarily change server settings (the test server shares this process)."""
     from config import settings
+
     saved = {}
 
     def _set(**kw):
@@ -157,15 +163,34 @@ def api(server):
         headers = {"Authorization": f"Bearer {TOKEN}"}
 
         def get(self, path, auth=True, **params):
-            return requests.get(server + path, params=params, headers=self.headers if auth else {}, timeout=20)
+            return requests.get(
+                server + path,
+                params=params,
+                headers=self.headers if auth else {},
+                timeout=20,
+            )
 
         def put(self, path, json=None, headers=None, **kw):
-            return requests.put(server + path, json=json, headers={**self.headers, **(headers or {})}, timeout=20, **kw)
+            return requests.put(
+                server + path,
+                json=json,
+                headers={**self.headers, **(headers or {})},
+                timeout=20,
+                **kw,
+            )
 
         def post(self, path, json=None, headers=None, **kw):
-            return requests.post(server + path, json=json, headers={**self.headers, **(headers or {})}, timeout=20, **kw)
+            return requests.post(
+                server + path,
+                json=json,
+                headers={**self.headers, **(headers or {})},
+                timeout=20,
+                **kw,
+            )
 
         def delete(self, path, auth=True):
-            return requests.delete(server + path, headers=self.headers if auth else {}, timeout=20)
+            return requests.delete(
+                server + path, headers=self.headers if auth else {}, timeout=20
+            )
 
     return Api()

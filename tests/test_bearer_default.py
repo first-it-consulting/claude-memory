@@ -6,6 +6,7 @@ variable. An empty value disables that auth path (auth._eq requires both
 sides non-empty), which is the secure default; personal tokens (cm_...) or
 ADMIN_TOKEN are the supported ways in.
 """
+
 import requests
 
 from config import Settings
@@ -23,4 +24,6 @@ def test_empty_bearer_token_rejects_any_token(server, settings_override):
             headers={"Authorization": f"Bearer {tok}"},
             timeout=20,
         )
-        assert r.status_code == 401, f"token {tok!r} was accepted with empty BEARER_TOKEN"
+        assert r.status_code == 401, (
+            f"token {tok!r} was accepted with empty BEARER_TOKEN"
+        )

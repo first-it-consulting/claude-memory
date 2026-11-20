@@ -6,18 +6,26 @@ LLM was seen distorting technical notes), filtered for lines that only make
 sense inside their own session, and prefixed with their origin so a recalled
 line still says where it came from.
 """
+
 from __future__ import annotations
 
 import re
 
 # "## Decisions", "### Dead ends", "**Decisions:**", "Dead-ends:" ...
-_HEADING = re.compile(r"^\s*(?:#{1,6}\s*|\*\*|__)?\s*([A-Za-z][A-Za-z +/&()-]*?)\s*:?\s*(?:\*\*|__)?\s*:?\s*$")
+_HEADING = re.compile(
+    r"^\s*(?:#{1,6}\s*|\*\*|__)?\s*([A-Za-z][A-Za-z +/&()-]*?)\s*:?\s*(?:\*\*|__)?\s*:?\s*$"
+)
 _MD_HEADING = re.compile(r"^\s*#{1,6}\s+\S")
 _BULLET = re.compile(r"^(\s*)(?:[-*+]|\d+[.)])\s+(.*\S)\s*$")
 
 KINDS = {
-    "decision": re.compile(r"^(key\s+)?decisions?(\s*\(?\s*\+?\s*(and\s+)?why\)?)?(\s+made)?$", re.IGNORECASE),
-    "dead-end": re.compile(r"^(dead[\s-]?ends?|failed attempts?|what didn.?t work)$", re.IGNORECASE),
+    "decision": re.compile(
+        r"^(key\s+)?decisions?(\s*\(?\s*\+?\s*(and\s+)?why\)?)?(\s+made)?$",
+        re.IGNORECASE,
+    ),
+    "dead-end": re.compile(
+        r"^(dead[\s-]?ends?|failed attempts?|what didn.?t work)$", re.IGNORECASE
+    ),
 }
 LABEL = {"decision": "Decision", "dead-end": "Dead end"}
 
@@ -41,7 +49,11 @@ def _heading_kind(line: str):
     m = _HEADING.match(line)
     if not m:
         return None
-    is_marked = _MD_HEADING.match(line) or line.strip().startswith(("**", "__")) or line.rstrip().endswith(":")
+    is_marked = (
+        _MD_HEADING.match(line)
+        or line.strip().startswith(("**", "__"))
+        or line.rstrip().endswith(":")
+    )
     if not is_marked:
         return None
     title = m.group(1).strip()
@@ -61,7 +73,7 @@ def extract(state: str) -> list[tuple[str, str]]:
     Indented continuation lines join their bullet; nested bullets are their own
     entries."""
     out: list[tuple[str, str]] = []
-    kind = None          # current section kind; None/'' = not collecting
+    kind = None  # current section kind; None/'' = not collecting
     current: list[str] = []
 
     def flush():
@@ -117,7 +129,9 @@ def tags_for(kind: str, project: str, harness: str) -> list[str]:
     return sorted(tags)
 
 
-def candidates(state: str, project: str, harness: str) -> tuple[list[dict], list[tuple[str, str]]]:
+def candidates(
+    state: str, project: str, harness: str
+) -> tuple[list[dict], list[tuple[str, str]]]:
     """(kept, dropped): kept = [{kind, text, content, tags}], dropped = [(kind, text)]."""
     kept, dropped, seen = [], [], set()
     for kind, text in extract(state):
@@ -126,9 +140,14 @@ def candidates(state: str, project: str, harness: str) -> tuple[list[dict], list
             continue
         seen.add(key)
         if keep(text):
-            kept.append({"kind": kind, "text": text,
-                         "content": content_for(kind, text, project),
-                         "tags": tags_for(kind, project, harness)})
+            kept.append(
+                {
+                    "kind": kind,
+                    "text": text,
+                    "content": content_for(kind, text, project),
+                    "tags": tags_for(kind, project, harness),
+                }
+            )
         else:
             dropped.append((kind, text))
     return kept, dropped

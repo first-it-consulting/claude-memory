@@ -12,6 +12,7 @@ downstream (memory.py, session_state, hooks, queue jobs) is scoped to that
 principal. MCP tools read the principal from a contextvar that the ASGI app
 sets before dispatching, so tools never touch headers themselves.
 """
+
 import hmac
 import logging
 from contextvars import ContextVar
@@ -25,15 +26,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Principal:
-    user_id: str          # tenant workspace (mem0 user_id)
-    role: str             # "user" | "admin"
-    via: str              # admin | token | oidc | legacy
-    label: str = ""       # display name (audit log)
+    user_id: str  # tenant workspace (mem0 user_id)
+    role: str  # "user" | "admin"
+    via: str  # admin | token | oidc | legacy
+    label: str = ""  # display name (audit log)
     # PAT context (api_tokens path only; defaults for every other caller)
     token_id: str = ""
     token_name: str = ""
     default_harness: str = ""
-    token_expires_in_days: int = -1   # -1 = not a PAT or never expires
+    token_expires_in_days: int = -1  # -1 = not a PAT or never expires
 
     @property
     def is_admin(self) -> bool:
@@ -92,6 +93,7 @@ def resolve(token: str) -> Principal | None:
         # stay dead, and during a DB outage the hooks could not read or write
         # anyway. Fail closed on lookup errors.
         import tokens
+
         try:
             if tokens.is_hash_revoked(tokens._hash(token)):
                 logger.info("auth: shared legacy token revoked (legacy-hooks)")
@@ -111,6 +113,7 @@ def _resolve_api_token(token: str) -> Principal | None:
     # legacy per-user shape (cm_<random>, users.token_hash) keeps its exact
     # old path below — row-role semantics, unchanged.
     import tokens
+
     try:
         t = tokens.get_by_token(token)
     except Exception as e:
@@ -122,12 +125,20 @@ def _resolve_api_token(token: str) -> Principal | None:
         days = -1
         if exp is not None and t.get("revoked_at") is None and exp.year < 9999:
             from datetime import datetime
+
             days = max(0, int((exp - datetime.now(UTC)).total_seconds() // 86400))
-        return Principal(t["user_id"], role, "token", t["name"],
-                         token_id=t["id"], token_name=t["name"],
-                         default_harness=t.get("default_harness", ""),
-                         token_expires_in_days=days)
+        return Principal(
+            t["user_id"],
+            role,
+            "token",
+            t["name"],
+            token_id=t["id"],
+            token_name=t["name"],
+            default_harness=t.get("default_harness", ""),
+            token_expires_in_days=days,
+        )
     import users
+
     try:
         u = users.get_by_token(token)
     except Exception as e:
@@ -154,15 +165,20 @@ def _resolve_oidc(token: str) -> Principal | None:
         logger.info("auth: OIDC token rejected: %s", e)
         return None
     import users
+
     username = claims.get("preferred_username") or claims.get("email") or ""
     email = claims.get("email") or ""
     try:
         u = users.upsert_oidc_user(
-            sub=claims["sub"], username=username, email=email,
+            sub=claims["sub"],
+            username=username,
+            email=email,
             is_admin=_has_admin_role(claims),
         )
     except ValueError as e:
-        logger.info("auth: OIDC user rejected (%s): %s", username or claims.get("sub"), e)
+        logger.info(
+            "auth: OIDC user rejected (%s): %s", username or claims.get("sub"), e
+        )
         return None
     except Exception as e:
         logger.warning("auth: OIDC user lookup failed (DB?): %s", e)
@@ -174,11 +190,16 @@ def _has_admin_role(claims: dict) -> bool:
     admin_roles = {r.strip() for r in settings.oidc_admin_roles.split(",") if r.strip()}
     realm_roles = set((claims.get("realm_access") or {}).get("roles") or [])
     client_roles = set(
-        ((claims.get("resource_access") or {}).get(settings.oidc_client_id) or {}).get("roles") or []
+        ((claims.get("resource_access") or {}).get(settings.oidc_client_id) or {}).get(
+            "roles"
+        )
+        or []
     )
     if (realm_roles | client_roles) & admin_roles:
         return True
-    admin_users = {u.strip().lower() for u in settings.oidc_admin_usernames.split(",") if u.strip()}
+    admin_users = {
+        u.strip().lower() for u in settings.oidc_admin_usernames.split(",") if u.strip()
+    }
     username = (claims.get("preferred_username") or "").lower()
     return bool(username) and username in admin_users
 
@@ -199,9 +220,11 @@ def _jwks() -> "object":
     import time as _time
 
     import jwt
+
     now = _time.monotonic()
     if not _discovery["jwks_uri"] or now - _discovery["time"] > 3600:
         import requests
+
         issuer = settings.oidc_issuer.rstrip("/")
         resp = requests.get(f"{issuer}/.well-known/openid-configuration", timeout=10)
         resp.raise_for_status()
@@ -210,7 +233,9 @@ def _jwks() -> "object":
         _jwks_client = None
     if _jwks_client is None:
         # cache_jwk_set=True + default 5-minute refresh handles key rotation.
-        _jwks_client = jwt.PyJWKClient(_discovery["jwks_uri"], cache_jwk_set=True, lifespan=300)
+        _jwks_client = jwt.PyJWKClient(
+            _discovery["jwks_uri"], cache_jwk_set=True, lifespan=300
+        )
     return _jwks_client
 
 
@@ -218,6 +243,7 @@ def verify_jwt(token: str) -> dict:
     """Verify signature, issuer, audience and lifetime; return the claims.
     Raises on any failure — callers must treat that as unauthenticated."""
     import jwt
+
     header = jwt.get_unverified_header(token)
     if header.get("alg") not in ("RS256", "ES256"):
         raise ValueError(f"unsupported JWT algorithm {header.get('alg')!r}")

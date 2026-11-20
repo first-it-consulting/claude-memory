@@ -13,6 +13,7 @@ table — the tenant registry plus how each caller authenticates:
 Schema changes are additive only (CREATE/ALTER ... IF NOT EXISTS) so an old
 server image keeps working against a migrated database (rollback path).
 """
+
 import hashlib
 import logging
 import re
@@ -101,17 +102,27 @@ def _row_to_user(row) -> dict:
 # CRUD
 # ---------------------------------------------------------------------------
 
-def create_user(user_id: str, name: str = "", role: str = "user",
-                oidc_sub: str | None = None, email: str = "") -> tuple[dict, str]:
+
+def create_user(
+    user_id: str,
+    name: str = "",
+    role: str = "user",
+    oidc_sub: str | None = None,
+    email: str = "",
+) -> tuple[dict, str]:
     """Create a tenant. Returns (user, api_token) — the token is shown once
     and stored only as a hash. Raises ValueError on a bad/duplicate id."""
     user_id = sanitize_id(user_id)
     if not valid_id(user_id):
-        raise ValueError(f"invalid user id {user_id!r} (use lowercase letters, digits, . _ -)")
+        raise ValueError(
+            f"invalid user id {user_id!r} (use lowercase letters, digits, . _ -)"
+        )
     if role not in VALID_ROLES:
         raise ValueError(f"role must be one of {VALID_ROLES}")
     if user_id == settings.shared_tenant_id:
-        raise ValueError(f"{settings.shared_tenant_id!r} is reserved for the shared space")
+        raise ValueError(
+            f"{settings.shared_tenant_id!r} is reserved for the shared space"
+        )
     token = generate_token()
     ensure_table()
     conn = _db_conn()
@@ -122,7 +133,15 @@ def create_user(user_id: str, name: str = "", role: str = "user",
                     f"INSERT INTO users (id, name, role, token_hash, oidc_sub, email, last_login_at)"
                     f" VALUES (%s, %s, %s, %s, %s, %s, CASE WHEN %s IS NULL THEN NULL ELSE now() END)"
                     f" RETURNING {USER_COLUMNS}",
-                    (user_id, name.strip(), role, hash_token(token), oidc_sub, email.strip(), oidc_sub),
+                    (
+                        user_id,
+                        name.strip(),
+                        role,
+                        hash_token(token),
+                        oidc_sub,
+                        email.strip(),
+                        oidc_sub,
+                    ),
                 )
                 return _row_to_user(cur.fetchone()), token
     except psycopg2.errors.UniqueViolation as e:
@@ -183,7 +202,9 @@ def get_by_token(token: str) -> dict | None:
             row = cur.fetchone()
             if not row:
                 return None
-            cur.execute("UPDATE users SET last_login_at = now() WHERE id = %s", (row["id"],))
+            cur.execute(
+                "UPDATE users SET last_login_at = now() WHERE id = %s", (row["id"],)
+            )
             return _row_to_user(row)
     finally:
         conn.close()
@@ -207,7 +228,10 @@ def touch_login(user_id: str) -> None:
         try:
             with conn:
                 with conn.cursor() as cur:
-                    cur.execute("UPDATE users SET last_login_at = now() WHERE id = %s", (user_id,))
+                    cur.execute(
+                        "UPDATE users SET last_login_at = now() WHERE id = %s",
+                        (user_id,),
+                    )
         finally:
             conn.close()
     except Exception as e:
@@ -242,8 +266,11 @@ def upsert_oidc_user(sub: str, username: str, email: str, is_admin: bool) -> dic
         user_id = "oidc-" + hashlib.sha256(sub.encode()).hexdigest()[:12]
     try:
         user, _token = create_user(
-            user_id, name=username or email or user_id,
-            role="admin" if is_admin else "user", oidc_sub=sub, email=email,
+            user_id,
+            name=username or email or user_id,
+            role="admin" if is_admin else "user",
+            oidc_sub=sub,
+            email=email,
         )
         return user
     except ValueError:
@@ -254,7 +281,9 @@ def upsert_oidc_user(sub: str, username: str, email: str, is_admin: bool) -> dic
             conn = _db_conn()
             try:
                 with conn:
-                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    with conn.cursor(
+                        cursor_factory=psycopg2.extras.RealDictCursor
+                    ) as cur:
                         cur.execute(
                             f"UPDATE users SET oidc_sub = %s, email = %s, last_login_at = now(), "
                             f"role = %s WHERE id = %s AND oidc_sub IS NULL RETURNING {USER_COLUMNS}",
@@ -262,28 +291,45 @@ def upsert_oidc_user(sub: str, username: str, email: str, is_admin: bool) -> dic
                         )
                         row = cur.fetchone()
                         if not row:
-                            raise ValueError("account already linked to another identity")
+                            raise ValueError(
+                                "account already linked to another identity"
+                            )
                         return _row_to_user(row)
             finally:
                 conn.close()
         raise
 
 
-def update_user(user_id: str, name: str | None = None, role: str | None = None,
-                disabled: bool | None = None) -> dict | None:
+def update_user(
+    user_id: str,
+    name: str | None = None,
+    role: str | None = None,
+    disabled: bool | None = None,
+) -> dict | None:
     sets, params = [], []
     if name is not None:
-        sets.append("name = %s"); params.append(name.strip())
+        sets.append("name = %s")
+        params.append(name.strip())
     if role is not None:
         if role not in VALID_ROLES:
             raise ValueError(f"role must be one of {VALID_ROLES}")
-        if role != "admin" and enabled_admin_count() <= 1 and (get_user(user_id) or {}).get("role") == "admin":
+        if (
+            role != "admin"
+            and enabled_admin_count() <= 1
+            and (get_user(user_id) or {}).get("role") == "admin"
+        ):
             raise ValueError("cannot demote the last enabled admin")
-        sets.append("role = %s"); params.append(role)
+        sets.append("role = %s")
+        params.append(role)
     if disabled is not None:
-        if disabled and (get_user(user_id) or {}).get("role") == "admin" and enabled_admin_count() <= 1:
+        if (
+            disabled
+            and (get_user(user_id) or {}).get("role") == "admin"
+            and enabled_admin_count() <= 1
+        ):
             raise ValueError("cannot disable the last enabled admin")
-        sets.append("disabled = %s"); params.append(bool(disabled))
+        sets.append("disabled = %s")
+        params.append(bool(disabled))
     if not sets:
         return get_user(user_id)
     params.append(user_id)
@@ -291,6 +337,7 @@ def update_user(user_id: str, name: str | None = None, role: str | None = None,
     disabling = bool(disabled)
     if disabling:
         import tokens
+
         tokens.ensure_table()  # make sure api_tokens exists before revoking in-txn
     conn = _db_conn()
     try:
@@ -322,6 +369,7 @@ def rotate_token(user_id: str) -> str | None:
     token = generate_token()
     ensure_table()
     import tokens
+
     tokens.ensure_table()
     conn = _db_conn()
     try:
@@ -365,7 +413,9 @@ def enabled_admin_count() -> int:
     conn = _db_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM users WHERE role = 'admin' AND NOT disabled")
+            cur.execute(
+                "SELECT COUNT(*) FROM users WHERE role = 'admin' AND NOT disabled"
+            )
             return int(cur.fetchone()[0])
     finally:
         conn.close()

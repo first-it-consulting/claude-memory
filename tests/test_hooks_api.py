@@ -1,4 +1,5 @@
 """REST: /api/hooks/* — briefing, recall, precompact."""
+
 import time
 
 import pytest
@@ -14,6 +15,7 @@ def briefing(api, **params):
 
 # --- briefing ------------------------------------------------------------------
 
+
 def test_briefing_without_state_only_gives_session_instructions(api):
     ctx = briefing(api, session_id="s1", project="p1", source="startup")
     assert "Memory session_id: `s1`" in ctx
@@ -28,8 +30,13 @@ def test_briefing_tool_name_is_configurable(api):
 
 
 def test_briefing_after_compaction_reinjects_checkpoint_and_auto_notes(api):
-    api.put("/api/sessions/s1", {"state": "## Goal\nFix kyverno require-labels", "project": "p1"})
-    api.post("/api/hooks/precompact", {"session_id": "s1", "notes": "User: also fix trivy"})
+    api.put(
+        "/api/sessions/s1",
+        {"state": "## Goal\nFix kyverno require-labels", "project": "p1"},
+    )
+    api.post(
+        "/api/hooks/precompact", {"session_id": "s1", "notes": "User: also fix trivy"}
+    )
     ctx = briefing(api, session_id="s1", project="p1", source="compact")
     assert "Context was just compacted" in ctx
     assert "Current session checkpoint" in ctx
@@ -91,8 +98,11 @@ def test_briefing_without_session_id(api):
 
 # --- recall ----------------------------------------------------------------------
 
+
 def test_recall_returns_hits_above_threshold(api):
-    ctx = api.get("/api/hooks/recall", q="how are cnpg backups configured on prod-k8s").json()["context"]
+    ctx = api.get(
+        "/api/hooks/recall", q="how are cnpg backups configured on prod-k8s"
+    ).json()["context"]
     assert ctx.startswith("### Possibly relevant memories")
     assert "barman backups" in ctx
     assert "Ollama runs on CPU" not in ctx  # below threshold
@@ -111,7 +121,9 @@ def test_recall_min_score_and_limit_params(api):
 
 
 def test_recall_bad_params_fall_back_to_defaults(api):
-    r = api.get("/api/hooks/recall", q="cnpg backups prod-k8s minio", limit="abc", min_score="x")
+    r = api.get(
+        "/api/hooks/recall", q="cnpg backups prod-k8s minio", limit="abc", min_score="x"
+    )
     assert r.status_code == 200 and "barman" in r.json()["context"]
 
 
@@ -123,9 +135,13 @@ def test_recall_returns_empty_on_search_error(api, fake_mem):
 
 # --- precompact ------------------------------------------------------------------
 
+
 def test_precompact_stores_and_truncates_notes(api, settings_override):
     settings_override(auto_notes_max_chars=200)
-    r = api.post("/api/hooks/precompact", {"session_id": "s1", "project": "p1", "harness": "codex", "notes": "n" * 500})
+    r = api.post(
+        "/api/hooks/precompact",
+        {"session_id": "s1", "project": "p1", "harness": "codex", "notes": "n" * 500},
+    )
     assert r.status_code == 200
     row = api.get("/api/sessions/s1").json()
     assert len(row["auto_notes"]) <= 200
@@ -140,7 +156,10 @@ def test_precompact_does_not_touch_state(api):
     assert row["state"] == "keep me" and row["auto_notes"] == "auto"
 
 
-@pytest.mark.parametrize("payload", [{"notes": "x"}, {"session_id": "s1"}, {"session_id": "s1", "notes": " "}])
+@pytest.mark.parametrize(
+    "payload",
+    [{"notes": "x"}, {"session_id": "s1"}, {"session_id": "s1", "notes": " "}],
+)
 def test_precompact_requires_session_and_notes(api, payload):
     assert api.post("/api/hooks/precompact", payload).status_code == 400
 
@@ -152,10 +171,19 @@ def test_hooks_require_auth(api):
 
 def test_recall_hits_are_condensed(api, fake_mem, settings_override):
     settings_override(hook_hit_max_chars=120)
-    fake_mem.corpus.append({"id": "long1", "memory": "cnpg backups prod-k8s " + "detail " * 400,
-                            "metadata": {"category": "project"}, "agent_id": "t",
-                            "created_at": "2026-11-01", "updated_at": "2026-11-01"})
-    ctx = api.get("/api/hooks/recall", q="how do cnpg backups work on prod-k8s?").json()["context"]
+    fake_mem.corpus.append(
+        {
+            "id": "long1",
+            "memory": "cnpg backups prod-k8s " + "detail " * 400,
+            "metadata": {"category": "project"},
+            "agent_id": "t",
+            "created_at": "2026-11-01",
+            "updated_at": "2026-11-01",
+        }
+    )
+    ctx = api.get(
+        "/api/hooks/recall", q="how do cnpg backups work on prod-k8s?"
+    ).json()["context"]
     assert "full text: search_memory" in ctx
     assert all(len(l) < 220 for l in ctx.splitlines())
 
@@ -167,7 +195,9 @@ def test_briefing_registers_project_for_later_mcp_checkpoint(api):
     assert row["project"] == "pX" and row["harness"] == "claude" and row["state"] == ""
     # an empty registered row is not offered as "last session"
     assert "Last session on pX" not in briefing(api, session_id="other", project="pX")
-    api.put("/api/sessions/reg1", {"state": "## Goal\nregistered goal"})  # no project, like MCP
+    api.put(
+        "/api/sessions/reg1", {"state": "## Goal\nregistered goal"}
+    )  # no project, like MCP
     ctx = briefing(api, session_id="next", project="pX", source="startup")
     assert "Last session on pX" in ctx and "registered goal" in ctx
 
@@ -175,12 +205,22 @@ def test_briefing_registers_project_for_later_mcp_checkpoint(api):
 def test_auto_promoted_memories_rank_lower_and_filter_by_tag(api, fake_mem):
     base = {"agent_id": "t", "created_at": "2026-11-01", "updated_at": "2026-11-01"}
     fake_mem.corpus += [
-        {"id": "promo", "memory": "kubeval ci ssl errors removed", **base,
-         "metadata": {"tags": ["auto-promoted", "decision"]}},
-        {"id": "manual", "memory": "kubeval ci ssl errors removed", **base,
-         "metadata": {"tags": ["ci"]}},
+        {
+            "id": "promo",
+            "memory": "kubeval ci ssl errors removed",
+            **base,
+            "metadata": {"tags": ["auto-promoted", "decision"]},
+        },
+        {
+            "id": "manual",
+            "memory": "kubeval ci ssl errors removed",
+            **base,
+            "metadata": {"tags": ["ci"]},
+        },
     ]
-    ctx = api.get("/api/hooks/recall", q="why was kubeval removed from ci ssl errors?").json()["context"]
+    ctx = api.get(
+        "/api/hooks/recall", q="why was kubeval removed from ci ssl errors?"
+    ).json()["context"]
     lines = [l for l in ctx.splitlines() if "kubeval" in l]
     assert "#ci" in lines[0] and "auto-promoted" in lines[1]
     ids = [m["id"] for m in api.get("/api/memories", tag="auto-promoted").json()]

@@ -7,6 +7,7 @@ Tenant behaviour mirrors the real store: every entry carries a `user_id`, and
 search/get_all honour the `{"user_id": ...}` filter, so multi-tenant isolation
 is testable without pgvector.
 """
+
 from __future__ import annotations
 
 import copy
@@ -51,7 +52,7 @@ class FakeMemory:
 
     def reset(self):
         self.corpus = copy.deepcopy(CORPUS)
-        self.mode = "normal"        # normal | raise | slow
+        self.mode = "normal"  # normal | raise | slow
         self.slow_seconds = 3.0
         self.infer_results: list[dict] = []
         self.calls: list[tuple] = []
@@ -61,7 +62,9 @@ class FakeMemory:
         """Add a corpus entry for a given tenant; returns its id."""
         rid = kw.pop("id", f"seed-{len(self.corpus) + 1}")
         entry = {
-            "id": rid, "memory": memory, "user_id": user_id,
+            "id": rid,
+            "memory": memory,
+            "user_id": user_id,
             "agent_id": kw.pop("agent_id", "claude"),
             "metadata": kw.pop("metadata", {}),
             "created_at": kw.pop("created_at", "2026-11-15T10:00:00+00:00"),
@@ -127,4 +130,8 @@ class FakeMemory:
         self.calls.append(("add", content, kwargs))
         if kwargs.get("infer", True):
             return {"results": list(self.infer_results)}
-        return {"results": [{"id": f"raw-{len(self.calls)}", "memory": content, "event": "ADD"}]}
+        return {
+            "results": [
+                {"id": f"raw-{len(self.calls)}", "memory": content, "event": "ADD"}
+            ]
+        }

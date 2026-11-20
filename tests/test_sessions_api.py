@@ -1,15 +1,23 @@
 """REST: /api/sessions — checkpoint storage."""
+
 import pytest
 
 pytestmark = pytest.mark.db
 
 
 def test_put_and_get_roundtrip(api):
-    r = api.put("/api/sessions/s1", {"state": "## Goal\nShip it", "project": "p1", "harness": "claude"})
+    r = api.put(
+        "/api/sessions/s1",
+        {"state": "## Goal\nShip it", "project": "p1", "harness": "claude"},
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
-    assert body["session_id"] == "s1" and body["project"] == "p1" and body["harness"] == "claude"
+    assert (
+        body["session_id"] == "s1"
+        and body["project"] == "p1"
+        and body["harness"] == "claude"
+    )
 
     got = api.get("/api/sessions/s1").json()
     assert got["state"] == "## Goal\nShip it"
@@ -53,7 +61,11 @@ def test_empty_state_is_rejected(api, payload):
 
 
 def test_invalid_json_is_rejected(api):
-    r = api.put("/api/sessions/s1", data="not json", headers={"Content-Type": "application/json"})
+    r = api.put(
+        "/api/sessions/s1",
+        data="not json",
+        headers={"Content-Type": "application/json"},
+    )
     assert r.status_code == 400
 
 
@@ -74,8 +86,13 @@ def test_list_filters_by_project_newest_first(api):
 def test_list_hides_sessions_without_content(api):
     # A session that only ever got auto notes is listed; one with neither is impossible
     # through the API, so just verify auto-notes-only sessions appear.
-    api.post("/api/hooks/precompact", {"session_id": "n1", "project": "p1", "notes": "user asked X"})
-    assert [r["session_id"] for r in api.get("/api/sessions", project="p1").json()] == ["n1"]
+    api.post(
+        "/api/hooks/precompact",
+        {"session_id": "n1", "project": "p1", "notes": "user asked X"},
+    )
+    assert [r["session_id"] for r in api.get("/api/sessions", project="p1").json()] == [
+        "n1"
+    ]
 
 
 def test_requires_auth(api):
@@ -86,8 +103,13 @@ def test_requires_auth(api):
 def test_list_filters_by_harness(api):
     api.put("/api/sessions/c1", {"state": "x", "project": "p1", "harness": "claude"})
     api.put("/api/sessions/x1", {"state": "y", "project": "p1", "harness": "codex"})
-    assert [r["session_id"] for r in api.get("/api/sessions", harness="codex").json()] == ["x1"]
-    assert [r["session_id"] for r in api.get("/api/sessions", project="p1", harness="claude").json()] == ["c1"]
+    assert [
+        r["session_id"] for r in api.get("/api/sessions", harness="codex").json()
+    ] == ["x1"]
+    assert [
+        r["session_id"]
+        for r in api.get("/api/sessions", project="p1", harness="claude").json()
+    ] == ["c1"]
 
 
 def test_delete_session(api):

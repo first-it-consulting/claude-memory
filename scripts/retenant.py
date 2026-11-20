@@ -32,6 +32,7 @@ Run in-cluster (image has psycopg2, no pg_dump):
   DATABASE_URL=... python scripts/retenant.py --source default --target my-user --apply
   DATABASE_URL=... python scripts/retenant.py --restore 20261120T090000
 """
+
 import argparse
 import os
 import re
@@ -46,7 +47,9 @@ def _counts(cur, tenant):
     out = {}
     cur.execute("SELECT count(*) FROM mem0 WHERE payload->>'user_id' = %s", (tenant,))
     out["mem0"] = cur.fetchone()[0]
-    cur.execute("SELECT count(*) FROM mem0_archive WHERE payload->>'user_id' = %s", (tenant,))
+    cur.execute(
+        "SELECT count(*) FROM mem0_archive WHERE payload->>'user_id' = %s", (tenant,)
+    )
     out["mem0_archive"] = cur.fetchone()[0]
     cur.execute("SELECT count(*) FROM session_state WHERE owner = %s", (tenant,))
     out["session_state"] = cur.fetchone()[0]
@@ -134,14 +137,17 @@ def main():
     src, tgt = _counts(cur, args.source), _counts(cur, args.target)
     print(f"source {args.source!r}: {src}")
     print(f"target {args.target!r}: {tgt}")
-    print("identical memory texts across tenants (would coexist):",
-          _dup_texts(cur, args.source, args.target))
+    print(
+        "identical memory texts across tenants (would coexist):",
+        _dup_texts(cur, args.source, args.target),
+    )
 
     if not args.apply:
         print("DRY RUN — nothing changed. Add --apply to move.")
         return
 
     import datetime
+
     tag = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%S")
     bak = _backup_table(cur, tag)
     _snapshot(cur, bak, args.source)
@@ -157,8 +163,10 @@ def main():
         (args.target, args.source),
     )
     n2 = cur.rowcount
-    cur.execute("UPDATE session_state SET owner = %s WHERE owner = %s",
-                (args.target, args.source))
+    cur.execute(
+        "UPDATE session_state SET owner = %s WHERE owner = %s",
+        (args.target, args.source),
+    )
     n3 = cur.rowcount
     expected = src["mem0"] + src["mem0_archive"] + src["session_state"]
     if n1 + n2 + n3 != expected:
