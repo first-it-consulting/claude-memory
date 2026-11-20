@@ -32,3 +32,6 @@ env/
 
 # Backups
 *.bak
+
+# Coverage data
+.coverage
