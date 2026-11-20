@@ -81,6 +81,7 @@ All settings come from environment variables (`.env` file is auto-loaded). See `
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Model used for text inference / dedup. |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Model used for embeddings. |
 | `APP_PORT` | `8080` | Port the server listens on. |
+| `APP_BIND` | `127.0.0.1` | Host interface `APP_PORT` is published on. Loopback by default (localhost only); set `0.0.0.0` or an interface IP to expose it. |
 | `REDIS_URL` | *(empty)* | Set to enable the async write queue (requires a reachable Redis). |
 | `ADMIN_TOKEN` | *(empty)* | Bootstrap admin API token (role admin, tenant `default`). Keep it set — it is the recovery path if the users table or Keycloak is unreachable. |
 | `SHARED_TENANT_ID` | `global` | Pseudo-tenant whose memories every workspace can read (admin-published). |

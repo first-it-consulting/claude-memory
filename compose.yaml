@@ -46,7 +46,9 @@ services:
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
       MEM0_TELEMETRY: "false"
     ports:
-      - "${APP_PORT:-8080}:8080"
+      # Bind loopback by default so the quickstart is not reachable on LAN/WAN.
+      # On a server set APP_BIND=0.0.0.0 (or a specific interface IP) in .env.
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:8080"
 
 volumes:
   pgdata:
