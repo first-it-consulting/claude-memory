@@ -67,7 +67,7 @@ All settings come from environment variables (`.env` file is auto-loaded). See `
 
 | Variable | Default | Description |
 |---|---|---|
-| `BEARER_TOKEN` | `change-me` | Shared secret for `/api/*` and `/mcp`. Send as `Authorization: Bearer <token>`. |
+| `BEARER_TOKEN` | `change-me` | **Legacy** shared secret for `/api/*` and `/mcp` (tenant `default`). Superseded by per-user API tokens; it is registered as the revocable token `legacy-hooks` so it can be switched off. Send as `Authorization: Bearer <token>`. |
 | `DATABASE_URL` | `postgresql://mem0:mem0@localhost:5432/mem0` | PostgreSQL connection string for the pgvector store. |
 | `ANTHROPIC_API_KEY` | *(empty)* | Optional: let mem0 use Anthropic for inference instead of Ollama. |
 | `MEM0_USER_ID` | `default` | mem0 user id used as a filter namespace. |
@@ -106,11 +106,25 @@ this was introduced: everything that existed before lives in tenant `default`.
 | `ADMIN_TOKEN` | operators, recovery | `default` / **admin** |
 | `cm_…` API token | agents (MCP, REST, hooks) | its user / its role |
 | Keycloak JWT | browser (UI login) | mapped by `sub`, role from realm roles |
-| `BEARER_TOKEN` (legacy) | pre-multi-tenancy setups | `default` / user |
+| `BEARER_TOKEN` (legacy) | shared token of pre-token setups; shown as `legacy-hooks` (user `default`), revocable | `default` / user |
 
-API tokens are created through `POST /api/users` (admin) and shown **once**;
-only their SHA-256 hash is stored. Rotate with
-`POST /api/users/{id}/rotate-token`. Keycloak access tokens are verified
+**Per-user API tokens** (`cm_<id>_<secret>`, `src/tokens.py`) are self-service:
+every signed-in user mints, lists and revokes their own tokens under
+**My tokens** in the UI (or `/api/me/tokens`). A token has a name, an expiry
+(default 90 days, maximum 365), an optional default harness and, for admins
+only, an opt-in `can_admin` flag; the secret is shown **once** and only its
+SHA-256 hash is stored. Admins see every token masked (prefix + last four) and
+can revoke any of them (`/api/admin/tokens`), but never mint one for someone
+else. Use one token per device or harness so a lost device is a single
+revoke. Creating/revoking is audited (`token_audit`); failed attempts are rate
+limited. `POST /api/users` / `rotate-token` still exist for the older
+per-user token on the `users` row (imported as `imported-legacy`).
+Migrating a device from the shared token: see
+[docs/token-migration.md](docs/token-migration.md); moving a tenant's data
+(a personal token reads **its** tenant, not `default`): see
+[docs/retenant-design.md](docs/retenant-design.md).
+
+Keycloak access tokens are verified
 against the realm's JWKS (signature, `iss`, `aud`, `exp`); the first login
 provisions `users` by `preferred_username`, and realm role
 `claude-memory-admin` (or `OIDC_ADMIN_USERNAMES`) grants the admin role on
@@ -166,6 +180,10 @@ Admins may add `?tenant=<id>` or `?scope=all` where marked *(admin scope)*.
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/auth/whoami` | Identity of the presented token (`user_id`, `role`, `via`) |
+| GET / POST | `/api/me/tokens` | List own API tokens (masked) / mint one (`{"name", "expires_days", "default_harness", "can_admin"}`) — plaintext returned **once** |
+| DELETE | `/api/me/tokens/{id}` | Revoke own token |
+| GET | `/api/admin/tokens` *(admin)* | All tokens, masked (`?user=`) |
+| DELETE | `/api/admin/tokens/{id}` *(admin)* | Revoke any token (revoking `legacy-hooks` kills the shared token for every device) |
 | GET | `/api/users` *(admin)* | List tenants (no token hashes) |
 | POST | `/api/users` *(admin)* | Create a tenant (`{"id", "name", "role"}`) — returns its API token **once** |
 | GET/PATCH/DELETE | `/api/users/{id}` *(admin)* | Read / change (name, role, disabled) / remove a tenant |
