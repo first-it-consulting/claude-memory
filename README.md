@@ -216,6 +216,77 @@ Admins may add `?tenant=<id>` or `?scope=all` where marked *(admin scope)*.
 
 ---
 
+## Quickstart (Docker Compose, ~5 minutes)
+
+Brings up postgres + server on `http://localhost:8080` using `compose.yaml`.
+Tested 2026-11-20 with Docker Compose v2 on macOS; the same steps run on Linux.
+
+**You need Ollama for real use.** Every write and search needs an embedding
+model, and storing memories with `infer=true` needs a chat model:
+
+```bash
+ollama pull nomic-embed-text        # embeddings (always required)
+ollama pull qwen2.5:7b              # or set OLLAMA_MODEL to any chat model
+```
+
+1. Configure:
+
+   ```bash
+   cp .env.example .env
+   # Set ADMIN_TOKEN in .env to a long random value - it is the bootstrap
+   # admin token. Generate one with:
+   openssl rand -hex 32
+   ```
+
+2. Start:
+
+   ```bash
+   docker compose up -d --build
+   curl -s localhost:8080/health      # {"status": "ok", ...}
+   ```
+
+3. Mint a personal token (the admin token is bootstrap only — use personal
+   tokens for clients). This creates tenant `alice` and prints her token once:
+
+   ```bash
+   curl -s -X POST localhost:8080/api/users \
+     -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+     -d '{"id":"alice","name":"Alice","role":"user"}' | jq .
+   ```
+
+   Or a token for the `default` tenant with your admin token:
+   `POST /api/me/tokens` (same headers, body `{"name":"laptop","expires_days":90}`).
+
+4. Connect an MCP client (e.g. Claude Code):
+
+   ```bash
+   claude mcp add --transport http claude-memory http://localhost:8080/mcp \
+     --header "Authorization: Bearer <your-personal-token>"
+   ```
+
+   Then `add_memory` / `search_memories` show up as tools. The MCP default is
+   `infer=false` — memories are stored as written.
+
+5. Optional — lifecycle hooks (briefing at session start, per-prompt recall):
+
+   ```bash
+   mkdir -p ~/.config/agent-memory
+   cp adapters/hooks/memory_hook.py ~/.config/agent-memory/
+   cp adapters/env.example ~/.config/agent-memory/env && chmod 600 ~/.config/agent-memory/env
+   # set AGENT_MEMORY_URL=http://localhost:8080 and AGENT_MEMORY_TOKEN=<personal token>
+   ```
+
+   Then merge the hook config for your harness (`adapters/claude-code/`,
+   `qwen/`, `codex/`, or the `pi/` extension) — see
+   [adapters/README.md](adapters/README.md).
+
+6. Optional — web UI: run the `claude-memory-ui` image (see that repo's
+   README). Without Keycloak it authenticates with the legacy shared token:
+   set `BEARER_TOKEN` in `.env` to a strong value, restart the stack, and give
+   the UI container the same value plus `MCP_INTERNAL_URL=http://server:8080`.
+
+To tear down: `docker compose down` (add `-v` to also drop the database).
+
 ## Build & run
 
 ### Requirements
