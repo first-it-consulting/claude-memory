@@ -1,10 +1,10 @@
 """PATs (api_tokens): mint, route, resolve, revoke, expiry, admin view."""
 import psycopg2
 import pytest
+from conftest import DB_URL, TOKEN
 
 import tokens as tok_mod
 import users as users_store
-from conftest import DB_URL, TOKEN
 
 pytestmark = pytest.mark.db
 
@@ -19,10 +19,9 @@ def user_with_token():
     tok_mod.ensure_table()  # create api_tokens before any fixture SQL touches it
     conn = psycopg2.connect(DB_URL)
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM users WHERE id LIKE 'pat-%'")
-                cur.execute("DELETE FROM api_tokens WHERE user_id LIKE 'pat-%'")
+        with conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE id LIKE 'pat-%'")
+            cur.execute("DELETE FROM api_tokens WHERE user_id LIKE 'pat-%'")
     finally:
         conn.close()
     u, cm = users_store.create_user("pat-u1", name="Pat One")
@@ -96,10 +95,9 @@ def test_expiry_rejects(server, user_with_token):
                       json={"name": "short"}, timeout=20).json()
     conn = psycopg2.connect(DB_URL)
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("UPDATE api_tokens SET expires_at = now() - interval '1 hour' "
-                            "WHERE id = %s", (r["id"],))
+        with conn, conn.cursor() as cur:
+            cur.execute("UPDATE api_tokens SET expires_at = now() - interval '1 hour' "
+                        "WHERE id = %s", (r["id"],))
     finally:
         conn.close()
     assert whoami(server, r["token"]).status_code == 401
@@ -273,10 +271,9 @@ def test_revoke_legacy_hooks_kills_shared_bearer(server):
                         timeout=20).status_code == 401
     conn = psycopg2.connect(DB_URL)
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("UPDATE api_tokens SET revoked_at = NULL, revoked_by = '' "
-                            "WHERE id = 'legacy-hooks'")
+        with conn, conn.cursor() as cur:
+            cur.execute("UPDATE api_tokens SET revoked_at = NULL, revoked_by = '' "
+                        "WHERE id = 'legacy-hooks'")
     finally:
         conn.close()
     assert requests.get(server + "/api/auth/whoami", headers=_auth(TOKEN),
@@ -299,10 +296,9 @@ def test_admin_http_revoke_and_restore_legacy_hooks(server, user_with_token):
     # Restore the shared token for the rest of the suite.
     conn = psycopg2.connect(DB_URL)
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("UPDATE api_tokens SET revoked_at = NULL, revoked_by = '' "
-                            "WHERE id = 'legacy-hooks'")
+        with conn, conn.cursor() as cur:
+            cur.execute("UPDATE api_tokens SET revoked_at = NULL, revoked_by = '' "
+                        "WHERE id = 'legacy-hooks'")
     finally:
         conn.close()
     assert requests.get(server + "/api/auth/whoami", headers=_auth(TOKEN),
@@ -337,9 +333,8 @@ def test_wrong_secret_known_id_no_audit_noise(server, user_with_token):
     import psycopg2 as pg
     conn = pg.connect(DB_URL)
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM token_audit")
+        with conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM token_audit")
     finally:
         conn.close()
     import requests

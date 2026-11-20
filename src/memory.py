@@ -2,11 +2,11 @@ import json
 import logging
 import threading
 import time
-from typing import Optional
+
 import psycopg2
 import psycopg2.extras
 from mem0 import Memory
-from mem0.configs.base import MemoryConfig, EmbedderConfig, LlmConfig, VectorStoreConfig
+from mem0.configs.base import EmbedderConfig, LlmConfig, MemoryConfig, VectorStoreConfig
 
 from config import settings
 
@@ -177,13 +177,12 @@ def add_tag_rule(tag: str, keyword: str, source: str = "manual") -> bool:
         return False
     conn = _db_conn()
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO tag_rules (tag, keyword, source) "
-                    "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                    (tag, keyword, source),
-                )
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO tag_rules (tag, keyword, source) "
+                "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                (tag, keyword, source),
+            )
         _invalidate_rules_cache()
         return True
     finally:
@@ -193,13 +192,12 @@ def add_tag_rule(tag: str, keyword: str, source: str = "manual") -> bool:
 def delete_tag_rule(tag: str, keyword: str) -> bool:
     conn = _db_conn()
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM tag_rules WHERE tag = %s AND keyword = %s",
-                    (tag, keyword),
-                )
-                deleted = cur.rowcount > 0
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM tag_rules WHERE tag = %s AND keyword = %s",
+                (tag, keyword),
+            )
+            deleted = cur.rowcount > 0
         _invalidate_rules_cache()
         return deleted
     finally:
@@ -221,7 +219,7 @@ def list_job_runs(limit: int = 50) -> list[dict]:
         conn.close()
 
 
-def get_job_run(run_id: str) -> Optional[dict]:
+def get_job_run(run_id: str) -> dict | None:
     conn = _db_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -268,7 +266,7 @@ def _build_config() -> MemoryConfig:
     )
 
 
-_mem: Optional[Memory] = None
+_mem: Memory | None = None
 _mem_lock = threading.Lock()
 
 
@@ -304,7 +302,7 @@ def _agent_id(agent_id: str) -> str:
 VALID_CATEGORIES = {"project", "feedback", "reference", "user", "session", "incident", ""}
 
 
-def _tenant(user_id: Optional[str]) -> str:
+def _tenant(user_id: str | None) -> str:
     """The tenant (mem0 user_id namespace) an operation runs in."""
     return user_id or settings.mem0_user_id
 
@@ -315,8 +313,8 @@ def _results(result) -> list[dict]:
     return result if isinstance(result, list) else []
 
 
-def add(content: str, user_id: Optional[str] = None, agent_id: str = "", infer: Optional[bool] = None,
-        category: str = "", tags: Optional[list] = None, extra_metadata: Optional[dict] = None) -> dict:
+def add(content: str, user_id: str | None = None, agent_id: str = "", infer: bool | None = None,
+        category: str = "", tags: list | None = None, extra_metadata: dict | None = None) -> dict:
     m = get_memory()
     metadata: dict = dict(extra_metadata or {})
     if category:
@@ -342,7 +340,7 @@ def _search_one(m: Memory, query: str, tenant: str, top_k: int) -> list[dict]:
     return _results(m.search(query, filters={"user_id": tenant}, top_k=top_k))
 
 
-def search(query: str, limit: int = 5, agent_id: str = "", user_id: Optional[str] = None,
+def search(query: str, limit: int = 5, agent_id: str = "", user_id: str | None = None,
            include_shared: bool = True) -> list[dict]:
     """Semantic search inside one tenant, merged with the shared space.
 
@@ -367,7 +365,7 @@ def search(query: str, limit: int = 5, agent_id: str = "", user_id: Optional[str
     return out[:limit]
 
 
-def search_across(query: str, limit: int, tenants: Optional[list[str]] = None) -> list[dict]:
+def search_across(query: str, limit: int, tenants: list[str] | None = None) -> list[dict]:
     """Admin view: search every tenant, best scores first.
 
     Prefers a single unfiltered search (covers namespaces that exist in the
@@ -398,7 +396,7 @@ def _get_all_one(m: Memory, tenant: str, agent_id: str) -> list[dict]:
     return _results(m.get_all(filters=filters, top_k=10000))
 
 
-def get_all(agent_id: str = "", user_id: Optional[str] = None,
+def get_all(agent_id: str = "", user_id: str | None = None,
             include_shared: bool = True) -> list[dict]:
     m = get_memory()
     tenant = _tenant(user_id)
@@ -412,7 +410,7 @@ def get_all(agent_id: str = "", user_id: Optional[str] = None,
     return list(merged.values())
 
 
-def get_all_across(agent_id: str = "", tenants: Optional[list[str]] = None) -> list[dict]:
+def get_all_across(agent_id: str = "", tenants: list[str] | None = None) -> list[dict]:
     """Admin view: every tenant's memories (includes the shared space).
     Prefers a single unfiltered scan; falls back to merging per-tenant reads."""
     m = get_memory()
@@ -431,7 +429,7 @@ def get_all_across(agent_id: str = "", tenants: Optional[list[str]] = None) -> l
     return list(merged.values())
 
 
-def get_owner(memory_id: str) -> Optional[str]:
+def get_owner(memory_id: str) -> str | None:
     """The tenant a memory belongs to, or None when it does not exist.
     Used for ownership checks before update/delete — cross-tenant ids must
     behave exactly like missing ones (404, no existence leak)."""
@@ -455,36 +453,34 @@ def delete(memory_id: str) -> dict:
     return m.delete(memory_id)
 
 
-def update_tags(memory_id: str, tags: list, user_id: Optional[str] = None,
+def update_tags(memory_id: str, tags: list, user_id: str | None = None,
                 allow_all: bool = False) -> bool:
     """Directly patch the tags field in the DB payload, preserving all other
     metadata. Fails (False) when the memory belongs to another tenant."""
     conn = _db_conn()
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT payload FROM mem0 WHERE id = %s", (memory_id,))
-                row = cur.fetchone()
-                if not row:
-                    return False
-                payload = row[0]
-                if not allow_all and payload.get("user_id") != _tenant(user_id):
-                    return False
+        with conn, conn.cursor() as cur:
+            cur.execute("SELECT payload FROM mem0 WHERE id = %s", (memory_id,))
+            row = cur.fetchone()
+            if not row:
+                return False
+            payload = row[0]
+            if not allow_all and payload.get("user_id") != _tenant(user_id):
+                return False
     except Exception:
         return False  # store unreachable or bad id — indistinguishable for the caller
     try:
-        with conn:
-            with conn.cursor() as cur:
-                meta = payload.get("metadata") or {}
-                if isinstance(meta.get("metadata"), dict):
-                    meta["metadata"]["tags"] = tags
-                else:
-                    meta["tags"] = tags
-                payload["metadata"] = meta
-                cur.execute(
-                    "UPDATE mem0 SET payload = %s WHERE id = %s",
-                    (json.dumps(payload), memory_id),
-                )
+        with conn, conn.cursor() as cur:
+            meta = payload.get("metadata") or {}
+            if isinstance(meta.get("metadata"), dict):
+                meta["metadata"]["tags"] = tags
+            else:
+                meta["tags"] = tags
+            payload["metadata"] = meta
+            cur.execute(
+                "UPDATE mem0 SET payload = %s WHERE id = %s",
+                (json.dumps(payload), memory_id),
+            )
         return True
     finally:
         conn.close()
@@ -517,9 +513,8 @@ def _ensure_session_table() -> None:
             return
         conn = _db_conn()
         try:
-            with conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
+            with conn, conn.cursor() as cur:
+                cur.execute("""
                         CREATE TABLE IF NOT EXISTS session_state (
                             session_id  TEXT PRIMARY KEY,
                             project     TEXT NOT NULL DEFAULT '',
@@ -530,25 +525,25 @@ def _ensure_session_table() -> None:
                             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
                         )
                     """)
-                    cur.execute(
-                        "ALTER TABLE session_state ADD COLUMN IF NOT EXISTS "
-                        "owner TEXT NOT NULL DEFAULT 'default'"
-                    )
-                    cur.execute(
-                        "CREATE INDEX IF NOT EXISTS session_state_project_idx "
-                        "ON session_state (project, updated_at DESC)"
-                    )
-                    cur.execute(
-                        "CREATE INDEX IF NOT EXISTS session_state_owner_idx "
-                        "ON session_state (owner, updated_at DESC)"
-                    )
+                cur.execute(
+                    "ALTER TABLE session_state ADD COLUMN IF NOT EXISTS "
+                    "owner TEXT NOT NULL DEFAULT 'default'"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS session_state_project_idx "
+                    "ON session_state (project, updated_at DESC)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS session_state_owner_idx "
+                    "ON session_state (owner, updated_at DESC)"
+                )
             _session_schema_ok = True
         finally:
             conn.close()
 
 
 def _upsert_session(session_id: str, column: str, value: str, project: str, harness: str,
-                    owner: Optional[str] = None) -> dict:
+                    owner: str | None = None) -> dict:
     assert column in ("state", "auto_notes")
     _ensure_session_table()
     tenant = _tenant(owner)
@@ -584,7 +579,7 @@ def _upsert_session(session_id: str, column: str, value: str, project: str, harn
 
 
 def register_session(session_id: str, project: str = "", harness: str = "",
-                     owner: Optional[str] = None) -> None:
+                     owner: str | None = None) -> None:
     """Create the session row or fill in missing project/harness, without
     touching state, auto_notes or updated_at (an empty row is not listed as a
     previous session, see list_checkpoints)."""
@@ -611,16 +606,16 @@ def register_session(session_id: str, project: str = "", harness: str = "",
 
 
 def put_checkpoint(session_id: str, state: str, project: str = "", harness: str = "",
-                   owner: Optional[str] = None) -> Optional[dict]:
+                   owner: str | None = None) -> dict | None:
     return _upsert_session(session_id, "state", state, project, harness, owner)
 
 
 def put_auto_notes(session_id: str, notes: str, project: str = "", harness: str = "",
-                   owner: Optional[str] = None) -> Optional[dict]:
+                   owner: str | None = None) -> dict | None:
     return _upsert_session(session_id, "auto_notes", notes, project, harness, owner)
 
 
-def delete_checkpoint(session_id: str, owner: Optional[str] = None) -> bool:
+def delete_checkpoint(session_id: str, owner: str | None = None) -> bool:
     """Delete a session row. Returns False if it did not exist (or belongs to
     another tenant — indistinguishable on purpose)."""
     _ensure_session_table()
@@ -640,7 +635,7 @@ def delete_checkpoint(session_id: str, owner: Optional[str] = None) -> bool:
         conn.close()
 
 
-def get_checkpoint(session_id: str, owner: Optional[str] = None) -> Optional[dict]:
+def get_checkpoint(session_id: str, owner: str | None = None) -> dict | None:
     """A session's checkpoint. owner=None reads across tenants (admin/scripts)."""
     _ensure_session_table()
     conn = _db_conn()
@@ -663,7 +658,7 @@ def get_checkpoint(session_id: str, owner: Optional[str] = None) -> Optional[dic
 
 
 def list_checkpoints(project: str = "", exclude_session: str = "", limit: int = 10,
-                     harness: str = "", owner: Optional[str] = None) -> list[dict]:
+                     harness: str = "", owner: str | None = None) -> list[dict]:
     """Most recently updated sessions with a non-empty state, newest first.
     owner=None lists across all tenants (admin/scripts)."""
     _ensure_session_table()

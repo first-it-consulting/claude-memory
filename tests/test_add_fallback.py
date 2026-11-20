@@ -3,7 +3,6 @@ import json
 import time
 
 import pytest
-
 from test_mcp_tools import call_tool
 
 

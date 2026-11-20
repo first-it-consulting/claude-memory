@@ -12,12 +12,11 @@ downstream (memory.py, session_state, hooks, queue jobs) is scoped to that
 principal. MCP tools read the principal from a contextvar that the ASGI app
 sets before dispatching, so tools never touch headers themselves.
 """
-import hashlib
 import hmac
 import logging
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Optional
+from datetime import UTC
 
 from config import settings
 
@@ -46,7 +45,7 @@ def default_principal() -> Principal:
     return Principal(settings.mem0_user_id, "admin", "local", "local")
 
 
-_principal_var: ContextVar[Optional[Principal]] = ContextVar("principal", default=None)
+_principal_var: ContextVar[Principal | None] = ContextVar("principal", default=None)
 
 
 def set_principal(p: Principal) -> None:
@@ -61,7 +60,7 @@ def _eq(a: str, b: str) -> bool:
     return bool(a) and bool(b) and hmac.compare_digest(a, b)
 
 
-def resolve(token: str) -> Optional[Principal]:
+def resolve(token: str) -> Principal | None:
     """Map a bearer token to a Principal, or None when unauthenticated."""
     token = (token or "").strip()
     if not token:
@@ -107,7 +106,7 @@ def resolve(token: str) -> Optional[Principal]:
     return None
 
 
-def _resolve_api_token(token: str) -> Optional[Principal]:
+def _resolve_api_token(token: str) -> Principal | None:
     # New-shape PATs (cm_<id>_<secret>) resolve through api_tokens; the
     # legacy per-user shape (cm_<random>, users.token_hash) keeps its exact
     # old path below — row-role semantics, unchanged.
@@ -122,8 +121,8 @@ def _resolve_api_token(token: str) -> Optional[Principal]:
         exp = t.get("expires_at")
         days = -1
         if exp is not None and t.get("revoked_at") is None and exp.year < 9999:
-            from datetime import datetime, timezone
-            days = max(0, int((exp - datetime.now(timezone.utc)).total_seconds() // 86400))
+            from datetime import datetime
+            days = max(0, int((exp - datetime.now(UTC)).total_seconds() // 86400))
         return Principal(t["user_id"], role, "token", t["name"],
                          token_id=t["id"], token_name=t["name"],
                          default_harness=t.get("default_harness", ""),
@@ -148,7 +147,7 @@ def _resolve_api_token(token: str) -> Optional[Principal]:
     return Principal(u["id"], u["role"], "token", u.get("name") or u["id"])
 
 
-def _resolve_oidc(token: str) -> Optional[Principal]:
+def _resolve_oidc(token: str) -> Principal | None:
     try:
         claims = verify_jwt(token)
     except Exception as e:
@@ -198,6 +197,7 @@ def _jwks() -> "object":
     once per process (Keycloak's jwks_uri is stable across restarts)."""
     global _jwks_client
     import time as _time
+
     import jwt
     now = _time.monotonic()
     if not _discovery["jwks_uri"] or now - _discovery["time"] > 3600:
@@ -239,7 +239,7 @@ def extract_bearer(header_value: str) -> str:
     return v[7:].strip() if v[:7].lower() == "bearer " else v
 
 
-def principal_from_asgi_headers(headers: dict) -> Optional[Principal]:
+def principal_from_asgi_headers(headers: dict) -> Principal | None:
     """headers: the raw ASGI header list as dict (bytes → bytes)."""
     raw = headers.get(b"authorization", b"").decode("utf-8", errors="replace")
     return resolve(extract_bearer(raw))

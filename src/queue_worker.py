@@ -17,7 +17,6 @@ import json
 import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
 from config import settings
 
@@ -25,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 _QUEUE_KEY = "remnant:queue:add_memory"
 _client = None
-_worker_task: Optional[asyncio.Task] = None
-_local_queue: Optional[asyncio.Queue] = None
+_worker_task: asyncio.Task | None = None
+_local_queue: asyncio.Queue | None = None
 
 _write_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mem-write")
 
@@ -108,7 +107,7 @@ async def _ensure_worker():
         _worker_task = asyncio.create_task(_run_worker())
 
 
-async def _next_job() -> Optional[dict]:
+async def _next_job() -> dict | None:
     if settings.redis_url:
         client = await _get_client()
         result = await client.blpop(_QUEUE_KEY, timeout=5)

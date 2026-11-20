@@ -142,7 +142,7 @@ def main():
         return
 
     import datetime
-    tag = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
+    tag = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%S")
     bak = _backup_table(cur, tag)
     _snapshot(cur, bak, args.source)
     cur.execute(

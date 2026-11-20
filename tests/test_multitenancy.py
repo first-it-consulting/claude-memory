@@ -9,7 +9,6 @@ import time
 
 import pytest
 import requests
-
 from conftest import TOKEN
 
 pytestmark = pytest.mark.db

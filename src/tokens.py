@@ -17,8 +17,7 @@ import logging
 import re
 import secrets
 import threading
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 import psycopg2
 import psycopg2.extras
@@ -57,9 +56,8 @@ def ensure_table() -> None:
             return
         conn = _db_conn()
         try:
-            with conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
+            with conn, conn.cursor() as cur:
+                cur.execute("""
                         CREATE TABLE IF NOT EXISTS api_tokens (
                             id              TEXT PRIMARY KEY,
                             user_id         TEXT NOT NULL,
@@ -77,11 +75,11 @@ def ensure_table() -> None:
                             revoked_by      TEXT NOT NULL DEFAULT ''
                         )
                     """)
-                    cur.execute(
-                        "CREATE INDEX IF NOT EXISTS api_tokens_user_id_idx "
-                        "ON api_tokens (user_id)"
-                    )
-                    cur.execute("""
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS api_tokens_user_id_idx "
+                    "ON api_tokens (user_id)"
+                )
+                cur.execute("""
                         CREATE TABLE IF NOT EXISTS token_audit (
                             id        BIGSERIAL PRIMARY KEY,
                             ts        TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -93,10 +91,10 @@ def ensure_table() -> None:
                             detail    TEXT NOT NULL DEFAULT ''
                         )
                     """)
-                    # One-shot import of legacy per-user tokens (hash copy, so
-                    # the original plaintext keeps working through BOTH paths).
-                    # can_admin TRUE keeps today's row-role semantics.
-                    cur.execute("""
+                # One-shot import of legacy per-user tokens (hash copy, so
+                # the original plaintext keeps working through BOTH paths).
+                # can_admin TRUE keeps today's row-role semantics.
+                cur.execute("""
                         INSERT INTO api_tokens
                             (id, user_id, name, prefix, last4, token_hash,
                              can_admin, expires_at, created_by)
@@ -108,21 +106,21 @@ def ensure_table() -> None:
                           AND NOT EXISTS (SELECT 1 FROM api_tokens a
                                           WHERE a.token_hash = u.token_hash)
                     """)
-                    # The shared config BEARER_TOKEN gets a visible identity:
-                    # a 'default' service user (no per-user token of its own)
-                    # and a fixed-id 'legacy-hooks' api_tokens row. Revoking
-                    # that row — checked by the config branch in auth.resolve
-                    # — kills every hook at once (the UI asks for a typed
-                    # confirmation for exactly this reason).
+                # The shared config BEARER_TOKEN gets a visible identity:
+                # a 'default' service user (no per-user token of its own)
+                # and a fixed-id 'legacy-hooks' api_tokens row. Revoking
+                # that row — checked by the config branch in auth.resolve
+                # — kills every hook at once (the UI asks for a typed
+                # confirmation for exactly this reason).
+                cur.execute(
+                    "INSERT INTO users (id, name, role) "
+                    "VALUES (%s, 'service (shared token)', 'user') "
+                    "ON CONFLICT (id) DO NOTHING",
+                    (settings.mem0_user_id,),
+                )
+                if settings.bearer_token:
                     cur.execute(
-                        "INSERT INTO users (id, name, role) "
-                        "VALUES (%s, 'service (shared token)', 'user') "
-                        "ON CONFLICT (id) DO NOTHING",
-                        (settings.mem0_user_id,),
-                    )
-                    if settings.bearer_token:
-                        cur.execute(
-                            """INSERT INTO api_tokens
+                        """INSERT INTO api_tokens
                                    (id, user_id, name, prefix, last4, token_hash,
                                     can_admin, expires_at, created_by)
                                VALUES ('legacy-hooks', %s, 'legacy-hooks',
@@ -135,8 +133,8 @@ def ensure_table() -> None:
                                        SELECT 1 FROM api_tokens a
                                        WHERE a.token_hash = EXCLUDED.token_hash
                                          AND a.id <> 'legacy-hooks')""",
-                            (settings.mem0_user_id, _hash(settings.bearer_token)),
-                        )
+                        (settings.mem0_user_id, _hash(settings.bearer_token)),
+                    )
             _schema_ok = True
         finally:
             conn.close()
@@ -194,7 +192,7 @@ def create_token(user_id: str, name: str, created_by: str, can_admin: bool = Fal
         conn.close()
 
 
-def get_by_token(token: str) -> Optional[dict]:
+def get_by_token(token: str) -> dict | None:
     """Resolve a cm_<id>_<secret> token to its row plus the owner's role and
     expiry info, or None. Disabled owners never resolve. Throttled
     last_used_at touch on success."""
@@ -226,7 +224,7 @@ def get_by_token(token: str) -> Optional[dict]:
             row.pop("token_hash", None)  # never leaves the module
             if row["revoked_at"] is not None:
                 return None
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             if row["expires_at"] is not None and row["expires_at"] <= now:
                 audit("expire_reject", token_id=tid, user_id=row["user_id"])
                 logger.info("auth: expired API token %s (id=%s)", row["prefix"], tid)
@@ -292,14 +290,13 @@ def revoke_hash(token_hash: str, revoked_by: str) -> int:
     ensure_table()
     conn = _db_conn()
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE api_tokens SET revoked_at = now(), revoked_by = %s "
-                    "WHERE token_hash = %s AND revoked_at IS NULL",
-                    (revoked_by, token_hash),
-                )
-                return cur.rowcount
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE api_tokens SET revoked_at = now(), revoked_by = %s "
+                "WHERE token_hash = %s AND revoked_at IS NULL",
+                (revoked_by, token_hash),
+            )
+            return cur.rowcount
     finally:
         conn.close()
 
@@ -406,7 +403,7 @@ def audit(event: str, token_id: str = "", user_id: str = "", actor: str = "",
 def _mask(row: dict) -> dict:
     """Display shape for every token listing: prefix + last4 only, plus
     convenience flags. The hash never leaves this module."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     exp = row.get("expires_at")
     days_left = None
     if exp is not None and row.get("revoked_at") is None:

@@ -18,7 +18,6 @@ import logging
 import re
 import secrets
 import threading
-from typing import Optional
 
 import psycopg2
 import psycopg2.extras
@@ -103,7 +102,7 @@ def _row_to_user(row) -> dict:
 # ---------------------------------------------------------------------------
 
 def create_user(user_id: str, name: str = "", role: str = "user",
-                oidc_sub: Optional[str] = None, email: str = "") -> tuple[dict, str]:
+                oidc_sub: str | None = None, email: str = "") -> tuple[dict, str]:
     """Create a tenant. Returns (user, api_token) — the token is shown once
     and stored only as a hash. Raises ValueError on a bad/duplicate id."""
     user_id = sanitize_id(user_id)
@@ -135,7 +134,7 @@ def create_user(user_id: str, name: str = "", role: str = "user",
         conn.close()
 
 
-def get_user(user_id: str) -> Optional[dict]:
+def get_user(user_id: str) -> dict | None:
     ensure_table()
     conn = _db_conn()
     try:
@@ -168,7 +167,7 @@ def list_tenant_ids() -> list[str]:
     return sorted(set(ids))
 
 
-def get_by_token(token: str) -> Optional[dict]:
+def get_by_token(token: str) -> dict | None:
     """Look up the user an API token belongs to (token is high-entropy; the
     lookup is an exact hash match in the index)."""
     if not token:
@@ -190,7 +189,7 @@ def get_by_token(token: str) -> Optional[dict]:
         conn.close()
 
 
-def get_by_oidc_sub(sub: str) -> Optional[dict]:
+def get_by_oidc_sub(sub: str) -> dict | None:
     ensure_table()
     conn = _db_conn()
     try:
@@ -247,7 +246,7 @@ def upsert_oidc_user(sub: str, username: str, email: str, is_admin: bool) -> dic
             role="admin" if is_admin else "user", oidc_sub=sub, email=email,
         )
         return user
-    except ValueError as e:
+    except ValueError:
         # Username already taken locally (e.g. the tenant was created with an
         # API token first): link this Keycloak subject to it instead.
         existing = get_user(user_id)
@@ -270,8 +269,8 @@ def upsert_oidc_user(sub: str, username: str, email: str, is_admin: bool) -> dic
         raise
 
 
-def update_user(user_id: str, name: Optional[str] = None, role: Optional[str] = None,
-                disabled: Optional[bool] = None) -> Optional[dict]:
+def update_user(user_id: str, name: str | None = None, role: str | None = None,
+                disabled: bool | None = None) -> dict | None:
     sets, params = [], []
     if name is not None:
         sets.append("name = %s"); params.append(name.strip())
@@ -316,7 +315,7 @@ def update_user(user_id: str, name: Optional[str] = None, role: Optional[str] = 
         conn.close()
 
 
-def rotate_token(user_id: str) -> Optional[str]:
+def rotate_token(user_id: str) -> str | None:
     """Replace the API token. Returns the new plaintext token (shown once).
     Any imported api_tokens row for the OLD hash is marked revoked in the same
     transaction so it never lingers as 'active' for a dead secret."""
@@ -326,23 +325,22 @@ def rotate_token(user_id: str) -> Optional[str]:
     tokens.ensure_table()
     conn = _db_conn()
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT token_hash FROM users WHERE id = %s", (user_id,))
-                old = cur.fetchone()
+        with conn, conn.cursor() as cur:
+            cur.execute("SELECT token_hash FROM users WHERE id = %s", (user_id,))
+            old = cur.fetchone()
+            cur.execute(
+                "UPDATE users SET token_hash = %s WHERE id = %s",
+                (hash_token(token), user_id),
+            )
+            if cur.rowcount == 0:
+                return None
+            if old and old[0]:
                 cur.execute(
-                    "UPDATE users SET token_hash = %s WHERE id = %s",
-                    (hash_token(token), user_id),
+                    "UPDATE api_tokens SET revoked_at = now(), revoked_by = %s "
+                    "WHERE token_hash = %s AND revoked_at IS NULL",
+                    ("rotated", old[0]),
                 )
-                if cur.rowcount == 0:
-                    return None
-                if old and old[0]:
-                    cur.execute(
-                        "UPDATE api_tokens SET revoked_at = now(), revoked_by = %s "
-                        "WHERE token_hash = %s AND revoked_at IS NULL",
-                        ("rotated", old[0]),
-                    )
-                return token
+            return token
     finally:
         conn.close()
 
@@ -355,10 +353,9 @@ def delete_user(user_id: str) -> bool:
     ensure_table()
     conn = _db_conn()
     try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
-                return cur.rowcount > 0
+        with conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+            return cur.rowcount > 0
     finally:
         conn.close()
 

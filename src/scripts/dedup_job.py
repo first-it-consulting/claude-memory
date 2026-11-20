@@ -26,18 +26,15 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import os
+import re
 import sys
-import time
 import uuid
-from typing import Optional
 
+import promotion  # sibling module: checkpoint parsing
 import psycopg2
 import psycopg2.extras
 import requests
-
-import promotion  # sibling module: checkpoint parsing
 
 log = logging.getLogger("dedup")
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -127,8 +124,8 @@ def finish_job_phase(
     scanned: int = 0,
     changed: int = 0,
     rules_added: int = 0,
-    error: Optional[str] = None,
-    details: Optional[str] = None,
+    error: str | None = None,
+    details: str | None = None,
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -156,7 +153,7 @@ def archive_rows(
     cur: psycopg2.extensions.cursor,
     row_ids: list[uuid.UUID],
     reason: str,
-    merged_into_id: Optional[uuid.UUID] = None,
+    merged_into_id: uuid.UUID | None = None,
 ) -> None:
     if merged_into_id is not None:
         merged_into_id = _uuids([merged_into_id])[0]
@@ -446,14 +443,14 @@ def find_semantic_clusters(
 def _strip_preamble(text: str) -> str:
     """Drop a leading 'Memory:' / 'Merged memory:' / 'Here is ...:' line."""
     lines = (text or "").strip().splitlines()
-    while lines and re.fullmatch(r"\s*(\*\*)?((merged|combined|final)\s+)?memory(\s+text)?:?(\*\*)?:?\s*|\s*here is.*:\s*", lines[0], re.I):
+    while lines and re.fullmatch(r"\s*(\*\*)?((merged|combined|final)\s+)?memory(\s+text)?:?(\*\*)?:?\s*|\s*here is.*:\s*", lines[0], re.IGNORECASE):
         lines = lines[1:]
     # drop the model's own remarks, e.g. "- (no specific date mentioned in both memories)"
     lines = [l for l in lines if not re.fullmatch(r"\s*(?:[-*]\s*)?\([^()]*\)\s*", l)]
     return "\n".join(lines).strip()
 
 
-def ollama_merge(texts: list[str]) -> Optional[str]:
+def ollama_merge(texts: list[str]) -> str | None:
     numbered = "\n\n".join(f"Memory {i+1}:\n{t}" for i, t in enumerate(texts))
     prompt = (
         f"You have {len(texts)} similar memory entries. "
@@ -493,7 +490,7 @@ def words(text: str) -> set[str]:
     return set(re.findall(r"\w+", (text or "").lower()))
 
 
-def covering_text(texts: list[str]) -> Optional[int]:
+def covering_text(texts: list[str]) -> int | None:
     """Index of a text that already contains every word of the others, if any:
     the cluster can then be reduced to it verbatim, without an LLM rewrite."""
     for i in sorted(range(len(texts)), key=lambda k: -len(texts[k])):
@@ -520,9 +517,9 @@ def delete_memory_direct(memory_id: str) -> None:
 
 
 def store_memory_direct(content: str, agent_id: str = "", category: str = "",
-                        tags: Optional[list] = None,
-                        extra_metadata: Optional[dict] = None,
-                        user_id: Optional[str] = None) -> Optional[str]:
+                        tags: list | None = None,
+                        extra_metadata: dict | None = None,
+                        user_id: str | None = None) -> str | None:
     """Store the merged memory verbatim, in-process (the job runs in the server
     image and gets the server's env). Returns the new id, or None — callers must
     then keep the originals. (The old MCP-over-HTTP call could not parse the
@@ -644,11 +641,11 @@ def _mstore():
     src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
     if src not in sys.path:
         sys.path.insert(0, src)
-    import memory as mstore  # noqa: E402
+    import memory as mstore
     return mstore
 
 
-def find_duplicate(text: str, threshold: float, user_id: Optional[str] = None) -> Optional[float]:
+def find_duplicate(text: str, threshold: float, user_id: str | None = None) -> float | None:
     """Best similarity of an existing memory to `text` if >= threshold, else None.
     Raises when the search itself fails, so nothing is promoted blind.
     Searches the owning tenant (plus the shared space), never other tenants."""

@@ -16,8 +16,8 @@ _MD_HEADING = re.compile(r"^\s*#{1,6}\s+\S")
 _BULLET = re.compile(r"^(\s*)(?:[-*+]|\d+[.)])\s+(.*\S)\s*$")
 
 KINDS = {
-    "decision": re.compile(r"^(key\s+)?decisions?(\s*\(?\s*\+?\s*(and\s+)?why\)?)?(\s+made)?$", re.I),
-    "dead-end": re.compile(r"^(dead[\s-]?ends?|failed attempts?|what didn.?t work)$", re.I),
+    "decision": re.compile(r"^(key\s+)?decisions?(\s*\(?\s*\+?\s*(and\s+)?why\)?)?(\s+made)?$", re.IGNORECASE),
+    "dead-end": re.compile(r"^(dead[\s-]?ends?|failed attempts?|what didn.?t work)$", re.IGNORECASE),
 }
 LABEL = {"decision": "Decision", "dead-end": "Dead end"}
 
@@ -29,7 +29,7 @@ MAX_CHARS = 600
 _SESSION_ONLY = re.compile(
     r"\b(this session|for now|for the moment|temporar(y|ily)|for this (task|pr|run))\b"
     r"|^(none|n/?a|nothing( yet)?|tbd|-)\.?$",
-    re.I,
+    re.IGNORECASE,
 )
 
 

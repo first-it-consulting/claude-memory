@@ -1,7 +1,7 @@
 import asyncio
 import json
-import re
 import logging
+import re
 import time
 import urllib.parse
 
@@ -280,8 +280,9 @@ async def _tokens_api(path: str, method: str, send, receive, qs: dict, principal
     """Self-service (/api/me/tokens) and admin (/api/admin/tokens) token
     management. Plaintext tokens appear exactly once, in the create response.
     Admins can list and revoke anything but never mint for other users."""
-    import tokens as tok_mod
     from urllib.parse import unquote
+
+    import tokens as tok_mod
 
     if admin_view:
         if path == "/api/admin/tokens" and method == "GET":
@@ -576,8 +577,8 @@ def _memory_dict(r: dict) -> dict:
 
 
 _ORIGIN_RE = re.compile(r"^\[origin:[^\]]*\]\s*")
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.S)
-_DESC_RE = re.compile(r"^description:\s*(.+)$", re.M)
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+_DESC_RE = re.compile(r"^description:\s*(.+)$", re.MULTILINE)
 
 
 def _condense(text: str, limit: int) -> str:
@@ -789,6 +790,7 @@ def _startup_schema_init() -> None:
     few retries so the legacy-hooks row exists right after rollout even if no
     request has arrived yet; the lazy ensure path remains the fallback."""
     import time
+
     import tokens
     for attempt in range(5):
         try:

@@ -3,7 +3,6 @@ import importlib.util
 import json
 
 import pytest
-
 from conftest import HOOK_SCRIPT
 
 
@@ -214,10 +213,11 @@ def test_pat_route_id():
 
 def test_pat_mask_never_exposes_and_handles_infinity():
     import datetime as dt
+
     import tokens
     row = {"id": "t1", "user_id": "u", "name": "n", "prefix": "cm_t1", "last4": "abcd",
            "can_admin": False, "default_harness": "", "created_at": "x", "created_by": "",
-           "expires_at": dt.datetime(9999, 12, 31, tzinfo=dt.timezone.utc),
+           "expires_at": dt.datetime(9999, 12, 31, tzinfo=dt.UTC),
            "last_used_at": None, "revoked_at": None, "revoked_by": "",
            "token_hash": "HASHMUSTNOTLEAK"}
     m = tokens._mask(row)

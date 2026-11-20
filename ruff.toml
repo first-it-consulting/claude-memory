@@ -1,0 +1,2 @@
+# Oldest supported runtime is Python 3.13 (CI matrix); image runs 3.15.
+target-version = "py313"

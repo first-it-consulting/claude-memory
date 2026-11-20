@@ -69,8 +69,9 @@ def pytest_configure(config):
 
 @pytest.fixture(scope="session")
 def fake_mem():
-    import memory as mem_store
     from fakes import FakeMemory
+
+    import memory as mem_store
 
     fake = FakeMemory()
     mem_store.get_memory = lambda: fake
@@ -91,6 +92,7 @@ def server(fake_mem):
     if not DB_OK:
         pytest.skip("database unavailable")
     import uvicorn
+
     import main
 
     with socket.socket() as s:
@@ -115,6 +117,7 @@ def _clean_sessions(request):
     """Every DB test starts with empty session_state and users tables."""
     if "db" in request.keywords and DB_OK:
         import psycopg2
+
         import memory as mem_store
         import users as users_store
         mem_store._ensure_session_table()
