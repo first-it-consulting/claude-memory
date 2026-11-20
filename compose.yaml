@@ -1,0 +1,42 @@
+# Production-like stack for claude-memory. Bring your own Ollama (LLM +
+# nomic-embed-text embeddings). Copy to a server, set the env vars below
+# (or in a .env file next to it) and:
+#   docker compose up -d --build
+name: claude-memory
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mem0}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mem0}
+      POSTGRES_DB: ${POSTGRES_DB:-mem0}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./compose-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mem0}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  server:
+    build: .
+    image: claude-memory:local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mem0}:${POSTGRES_PASSWORD:-mem0}@postgres:5432/${POSTGRES_DB:-mem0}
+      # Legacy shared token (tenant "default", role user). Set a strong value.
+      BEARER_TOKEN: ${BEARER_TOKEN:-change-me}
+      # Optional separate admin token; empty disables that auth path.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      MEM0_TELEMETRY: "false"
+    ports:
+      - "${APP_PORT:-8080}:8080"
+
+volumes:
+  pgdata:

@@ -1,0 +1,23 @@
+# CI override: run the stack against a deterministic Ollama stub instead of
+# a real Ollama. Everything else stays real (postgres+pgvector, the server
+# image, HTTP/MCP/auth paths). Used as:
+#   docker compose -f compose.yaml -f compose.test.yaml up -d --wait
+services:
+  ollama-stub:
+    image: python:3.15-slim
+    command: ["python", "/stub/ollama_stub.py"]
+    volumes:
+      - ./tests:/stub:ro
+
+  server:
+    image: claude-memory:smoke   # pre-built by the CI smoke job
+    build: !reset null
+    environment:
+      DATABASE_URL: postgresql://mem0:mem0@postgres:5432/mem0
+      BEARER_TOKEN: smoke-legacy-token
+      ADMIN_TOKEN: smoke-admin-token
+      OLLAMA_BASE_URL: http://ollama-stub:11434
+      OIDC_ISSUER: ""
+      MEM0_TELEMETRY: "false"
+    # ports come from the base compose (8080:8080); repeating them here
+    # would MERGE a duplicate host binding and break the port.
