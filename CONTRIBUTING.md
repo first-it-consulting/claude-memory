@@ -26,3 +26,11 @@ configuration table in the README for the environment variables.
 ## Reporting issues
 
 Bugs and feature requests: use the issue templates. Security issues: see [SECURITY.md](SECURITY.md).
+
+## Blame hygiene
+
+One-time setup to keep `git blame` useful across the mass-reformat commit:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
