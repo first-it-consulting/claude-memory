@@ -4,6 +4,7 @@ import logging
 import re
 import time
 import urllib.parse
+from typing import Any
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
@@ -233,7 +234,7 @@ async def get_checkpoint(session_id: str = "", project: str = "") -> str:
 # Build the FastMCP Starlette app and extract the ASGI handler directly
 # to bypass Starlette's redirect_slashes (caused 307s on POST /mcp).
 _starlette_app = mcp.streamable_http_app()
-_mcp_handler = _starlette_app.router.routes[0].app
+_mcp_handler = _starlette_app.router.routes[0].app  # type: ignore[attr-defined]  # Starlette wraps the ASGI app onto routes at runtime
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +313,7 @@ def _client_ip(headers: dict) -> str:
 
 def _auth_fail_limited(ip: str) -> bool:
     now = time.monotonic()
-    window = _auth_fail_limited.windows
+    window = _AUTH_FAIL_WINDOWS
     q = [t for t in window.get(ip, []) if now - t < _AUTH_FAIL_WINDOW]
     q.append(now)
     window[ip] = q
@@ -322,7 +323,7 @@ def _auth_fail_limited(ip: str) -> bool:
     return len(q) > _AUTH_FAIL_LIMIT
 
 
-_auth_fail_limited.windows: dict = {}
+_AUTH_FAIL_WINDOWS: dict = {}
 
 
 async def _tokens_api(
@@ -485,15 +486,15 @@ async def _users_api(path: str, method: str, send, receive, qs: dict) -> bool:
             uid, action = rest.split("/", 1)
             uid = urllib.parse.unquote(uid)
             if action == "rotate-token" and method == "POST":
-                token = await _to_thread(users_store.rotate_token, uid)
-                if token is None:
+                new_token = await asyncio.to_thread(users_store.rotate_token, uid)
+                if new_token is None:
                     await _send_response(
                         send, 404, [[b"content-type", b"text/plain"]], b"Not Found"
                     )
                     return True
                 logger.info("audit: rotated API token for %s", uid)
                 await _send_response(
-                    send, *_json_response({"ok": True, "token": token})
+                    send, *_json_response({"ok": True, "token": new_token})
                 )
                 return True
             await _send_response(
@@ -503,13 +504,13 @@ async def _users_api(path: str, method: str, send, receive, qs: dict) -> bool:
 
         uid = urllib.parse.unquote(rest)
         if method == "GET":
-            user = await _to_thread(users_store.get_user, uid)
-            if user is None:
+            target = await asyncio.to_thread(users_store.get_user, uid)
+            if target is None:
                 await _send_response(
                     send, 404, [[b"content-type", b"text/plain"]], b"Not Found"
                 )
                 return True
-            await _send_response(send, *_json_response(user))
+            await _send_response(send, *_json_response(target))
             return True
         if method == "PATCH":
             try:
@@ -519,26 +520,26 @@ async def _users_api(path: str, method: str, send, receive, qs: dict) -> bool:
                     send, 400, [[b"content-type", b"text/plain"]], b"Bad Request"
                 )
                 return True
-            kw = {}
+            kw: dict[str, Any] = {}
             for key in ("name", "role"):
                 if key in body:
                     kw[key] = str(body[key])
             if "disabled" in body:
                 kw["disabled"] = bool(body["disabled"])
             try:
-                user = await _to_thread(users_store.update_user, uid, **kw)
+                updated = await asyncio.to_thread(users_store.update_user, uid, **kw)
             except ValueError as e:
                 await _send_response(
                     send, *_json_response({"ok": False, "error": str(e)}, status=400)
                 )
                 return True
-            if user is None:
+            if updated is None:
                 await _send_response(
                     send, 404, [[b"content-type", b"text/plain"]], b"Not Found"
                 )
                 return True
             logger.info("audit: updated user %s %s", uid, sorted(kw))
-            await _send_response(send, *_json_response({"ok": True, "user": user}))
+            await _send_response(send, *_json_response({"ok": True, "user": updated}))
             return True
         if method == "DELETE":
             try:

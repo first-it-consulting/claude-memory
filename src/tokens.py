@@ -207,7 +207,7 @@ def create_token(
                         str(days),
                     ),
                 )
-                row = dict(cur.fetchone())
+                row = dict(cur.fetchone())  # type: ignore[arg-type]  # INSERT ... RETURNING always yields a row
                 audit(
                     "create",
                     token_id=tid,
@@ -244,7 +244,7 @@ def get_by_token(token: str) -> dict | None:
             row = cur.fetchone()
             if not row:
                 return None
-            row = dict(row)
+            row = dict(row)  # type: ignore[assignment]  # rebind narrowed RealDictRow|None to a plain dict copy
             # Secret first: a wrong secret on a known id must not reach the
             # revoked/expired branches (no audit rows, no misleading logs).
             if not hmac.compare_digest(row["token_hash"], _hash(token)):

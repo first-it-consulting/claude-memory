@@ -306,7 +306,8 @@ def update_user(
     role: str | None = None,
     disabled: bool | None = None,
 ) -> dict | None:
-    sets, params = [], []
+    sets: list[str] = []
+    params: list[object] = []
     if name is not None:
         sets.append("name = %s")
         params.append(name.strip())
@@ -416,6 +417,6 @@ def enabled_admin_count() -> int:
             cur.execute(
                 "SELECT COUNT(*) FROM users WHERE role = 'admin' AND NOT disabled"
             )
-            return int(cur.fetchone()[0])
+            return int(cur.fetchone()[0])  # type: ignore[index]  # COUNT(*) always returns exactly one row
     finally:
         conn.close()

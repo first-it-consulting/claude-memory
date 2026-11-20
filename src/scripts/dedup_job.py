@@ -155,7 +155,7 @@ def archive_rows(
     cur: psycopg2.extensions.cursor,
     row_ids: list[uuid.UUID],
     reason: str,
-    merged_into_id: uuid.UUID | None = None,
+    merged_into_id: str | uuid.UUID | None = None,
 ) -> None:
     if merged_into_id is not None:
         merged_into_id = _uuids([merged_into_id])[0]
@@ -769,7 +769,7 @@ def phase_promote_checkpoints(
     promoted, sessions, report = 0, [], []
     try:
         sessions = promotable_sessions(conn, idle_hours)
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         for s in sessions:
             kept, dropped = promotion.candidates(s["state"], s["project"], s["harness"])
             if not kept and not dropped:

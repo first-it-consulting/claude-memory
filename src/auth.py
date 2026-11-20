@@ -18,8 +18,12 @@ import logging
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC
+from typing import TYPE_CHECKING
 
 from config import settings
+
+if TYPE_CHECKING:  # runtime imports stay lazy inside the OIDC helpers
+    import jwt
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +217,7 @@ _discovery: dict = {"jwks_uri": "", "time": 0.0}
 _jwks_client = None
 
 
-def _jwks() -> "object":
+def _jwks() -> "jwt.PyJWKClient":
     """PyJWKClient for the configured issuer, cached. Discovery is fetched
     once per process (Keycloak's jwks_uri is stable across restarts)."""
     global _jwks_client

@@ -111,7 +111,7 @@ def _ensure_schema() -> None:
                         "ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS details TEXT"
                     )
                     cur.execute("SELECT COUNT(*) FROM tag_rules")
-                    if cur.fetchone()[0] == 0:
+                    if cur.fetchone()[0] == 0:  # type: ignore[index]  # COUNT(*) always returns exactly one row
                         for tag, keywords in _TAG_RULES_SEED.items():
                             for kw in keywords:
                                 cur.execute(
@@ -599,7 +599,7 @@ def _upsert_session(
     project: str,
     harness: str,
     owner: str | None = None,
-) -> dict:
+) -> dict | None:
     assert column in ("state", "auto_notes")
     _ensure_session_table()
     tenant = _tenant(owner)
