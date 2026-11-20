@@ -100,6 +100,9 @@ def resolve(token: str) -> Optional[Principal]:
         except Exception as e:
             logger.warning("auth: shared-token revocation check failed (DB?): %s", e)
             return None
+        # Keep 'last used' honest for the migration runbook (revoking is only
+        # safe once nobody used it recently). Throttled, own txn, never fails.
+        tokens.touch_last_used("legacy-hooks")
         return Principal(settings.mem0_user_id, "user", "legacy", "legacy-token")
     return None
 

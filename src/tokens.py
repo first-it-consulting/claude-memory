@@ -235,26 +235,32 @@ def get_by_token(token: str) -> Optional[dict]:
                 return None
     finally:
         conn.close()
-    # Throttled touch on its own committed connection (at most one write per
-    # token per 5 minutes). Separate short transaction: never blocks the
-    # resolve if it is slow, and actually persists (autocommit-off would
-    # otherwise roll the UPDATE back at close).
+    touch_last_used(tid)
+    return row
+
+
+def touch_last_used(token_id: str) -> None:
+    """Throttled last_used_at touch on its own committed connection (at most
+    one write per token per 5 minutes). Separate short transaction: never
+    blocks the caller if it is slow, never raises into it, and actually
+    persists (autocommit-off would otherwise roll the UPDATE back at close)."""
+    if not token_id:
+        return
     try:
-        conn2 = _db_conn()
+        conn = _db_conn()
         try:
-            with conn2:
-                with conn2.cursor() as cur:
+            with conn:
+                with conn.cursor() as cur:
                     cur.execute(
                         """UPDATE api_tokens SET last_used_at = now()
                            WHERE id = %s AND (last_used_at IS NULL
                                               OR last_used_at < now() - interval '5 minutes')""",
-                        (tid,),
+                        (token_id,),
                     )
         finally:
-            conn2.close()
+            conn.close()
     except Exception as e:
-        logger.debug("last_used touch failed (id=%s): %s", tid, e)
-    return row
+        logger.debug("last_used touch failed (id=%s): %s", token_id, e)
 
 
 def is_hash_revoked(token_hash: str) -> bool:
