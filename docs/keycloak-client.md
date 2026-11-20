@@ -28,6 +28,21 @@ Assign the realm role `claude-memory-admin` to users who should see all
 workspaces. The server maps it via `OIDC_ADMIN_ROLES`; a JWT whose `realm_access.roles`
 contains it makes `whoami` return `role=admin`.
 
+**Assign the role to the Keycloak account that is actually used to log into the
+UI** — the server resolves identity from the token's `sub` and auto-creates a
+workspace from `preferred_username` on first login (`OIDC_AUTO_CREATE`). A
+role granted to a different account has no effect. Roles are re-asserted from
+the token on *every* login (`users.upsert_oidc_user`), so granting/revoking a
+realm role takes effect on the next token refresh+request without touching the
+database.
+
+Live changes on 2026-11-20: `claude-memory-admin` granted to realm users
+`helge` (at rollout) and `admin` (browser logins use this account; it had
+auto-created an empty `user`-role workspace, which the role grant promotes to
+admin on next login). Server-side workspaces: `default` holds all pre-existing
+data (legacy bearer clients depend on it), `helge` is the API-token identity,
+`admin` is the browser login identity.
+
 ## Audience mapper (the 26.3.3 trap)
 
 The server validates the access token with `audience=<client_id>`, so the
