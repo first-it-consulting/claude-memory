@@ -41,7 +41,10 @@ Live changes on 2026-11-20: `claude-memory-admin` granted to realm users
 auto-created an empty `user`-role workspace, which the role grant promotes to
 admin on next login). Server-side workspaces: `default` holds all pre-existing
 data (legacy bearer clients depend on it), `helge` is the API-token identity,
-`admin` is the browser login identity.
+`admin` is the browser login identity. If someone later logs in with the
+Keycloak `helge` account, `upsert_oidc_user` links its `sub` into the existing
+`helge` row (username taken, `oidc_sub` NULL) — merging the API-token and
+browser identities into that workspace.
 
 ## Audience mapper (the 26.3.3 trap)
 
