@@ -245,10 +245,19 @@ _AUTH_FAIL_WINDOW = 600.0     # per IP per 10 minutes
 
 
 def _client_ip(headers: dict) -> str:
+    """Best-effort client IP for rate limiting — NOT an identity.
+    X-Real-IP first (ingress-nginx sets it), X-Forwarded-For first hop as a
+    fallback, '' when neither exists. Caveat verified on this cluster: the
+    internal ingress sets enable-real-ip=true (realip module), so a
+    determined client can spoof these headers; the limiter is therefore
+    deliberately generous (120/10min) and the window self-clears, bounding
+    any framing attempt. '' means untrusted: never count it, never share a
+    bucket for it."""
+    real = headers.get(b"x-real-ip", b"").decode(errors="replace").strip()
+    if real:
+        return real
     xff = headers.get(b"x-forwarded-for", b"").decode(errors="replace")
-    if xff:
-        return xff.split(",")[0].strip()
-    return headers.get(b"x-real-ip", b"").decode(errors="replace")
+    return xff.split(",")[0].strip() if xff else ""
 
 
 def _auth_fail_limited(ip: str) -> bool:
@@ -296,22 +305,39 @@ async def _tokens_api(path: str, method: str, send, receive, qs: dict, principal
         except Exception:
             body = {}
         can_admin = bool(body.get("can_admin")) and principal.is_admin
+        raw_days = body.get("expires_days")
+        clamped_note = ""
+        if raw_days in (None, ""):
+            days = tok_mod.DEFAULT_EXPIRY_DAYS
+        else:
+            try:
+                days = int(raw_days)
+            except (TypeError, ValueError):
+                await _send_response(send, *_json_response(
+                    {"ok": False, "error": "expires_days must be an integer"}, status=400))
+                return True
+            clamped = max(1, min(days, tok_mod.MAX_EXPIRY_DAYS))
+            if clamped != days:
+                clamped_note = f"expires_days {days} clamped to {clamped}"
+            days = clamped
         try:
             row, plain = await _to_thread(
                 tok_mod.create_token, principal.user_id,
-                str(body.get("name", "")), principal.user_id, can_admin,
-                int(body.get("expires_days") or tok_mod.DEFAULT_EXPIRY_DAYS),
+                str(body.get("name", "")), principal.user_id, can_admin, days,
                 str(body.get("default_harness", "")),
             )
         except Exception as e:
             await _send_response(send, *_json_response(
                 {"ok": False, "error": f"could not create token: {type(e).__name__}"}, status=500))
             return True
-        await _send_response(send, *_json_response({
-            "ok": True, "id": row["id"], "token": plain,
+        out = {
+            "ok": True, "id": row["id"], "token": plain, "expires_days": days,
             "expires_at": str(row["expires_at"]), "can_admin": row["can_admin"],
             "warning": "shown once — store it now; only its hash is kept",
-        }))
+        }
+        if clamped_note:
+            out["note"] = clamped_note
+        await _send_response(send, *_json_response(out))
         return True
     if path.startswith("/api/me/tokens/") and method == "DELETE":
         tid = unquote(path[len("/api/me/tokens/"):]).strip()
@@ -845,15 +871,19 @@ async def app(scope, receive, send):
     if path.startswith("/api/"):
         principal = auth.principal_from_asgi_headers(headers)
         if principal is None:
+            # Count/audit ONLY requests that presented a credential that
+            # failed validation. Unauthenticated page loads (no Authorization
+            # header) are the pre-login UI, not an attack, and must never
+            # consume the budget or write audit rows.
+            presented = bool(headers.get(b"authorization", b"").strip())
             ip = _client_ip(headers)
-            limited = _auth_fail_limited(ip)
-            if not limited:  # don't let a flood turn into an audit-table flood
+            if presented and ip:  # ip=='' -> untrusted, skip limiting entirely
+                if _auth_fail_limited(ip):
+                    await _send_response(send, 429, [[b"content-type", b"text/plain"]],
+                                         b"Too many failed auth attempts")
+                    return
                 import tokens as _tok
                 _tok.audit("auth_fail", ip=ip, detail=path[:100])
-            if limited:
-                await _send_response(send, 429, [[b"content-type", b"text/plain"]],
-                                     b"Too many failed auth attempts")
-                return
             await _send_response(send, 401, [[b"content-type", b"text/plain"]], b"Unauthorized")
             return
         auth.set_principal(principal)

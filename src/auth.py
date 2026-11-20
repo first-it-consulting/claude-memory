@@ -119,6 +119,15 @@ def _resolve_api_token(token: str) -> Optional[Principal]:
         return None
     if not u:
         return None
+    # Revocation single source of truth: if this legacy hash was imported
+    # into api_tokens and revoked there, the plaintext is dead too.
+    try:
+        if tokens.is_hash_revoked(tokens._hash(token)):
+            logger.info("auth: legacy token revoked for user %s", u["id"])
+            return None
+    except Exception as e:
+        logger.warning("api_tokens revocation check failed (DB?): %s", e)
+        return None
     return Principal(u["id"], u["role"], "token", u.get("name") or u["id"])
 
 

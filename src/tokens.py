@@ -12,6 +12,7 @@ rejection with the id segment so a mis-migrated device is one log line to
 diagnose. Audit rows are append-only; nothing here updates or deletes them.
 """
 import hashlib
+import hmac
 import logging
 import re
 import secrets
@@ -189,25 +190,80 @@ def get_by_token(token: str) -> Optional[dict]:
             if not row:
                 return None
             row = dict(row)
-            now = datetime.now(timezone.utc)
+            # Secret first: a wrong secret on a known id must not reach the
+            # revoked/expired branches (no audit rows, no misleading logs).
+            if not hmac.compare_digest(row["token_hash"], _hash(token)):
+                return None
             if row["revoked_at"] is not None:
                 return None
+            now = datetime.now(timezone.utc)
             if row["expires_at"] is not None and row["expires_at"] <= now:
                 audit("expire_reject", token_id=tid, user_id=row["user_id"])
                 logger.info("auth: expired API token %s (id=%s)", row["prefix"], tid)
                 return None
             if row["user_disabled"]:
                 return None
-            if row["token_hash"] != _hash(token):
-                return None
-            # Throttled touch: at most one write per token per 5 minutes.
+    finally:
+        conn.close()
+    # Throttled touch on its own committed connection (at most one write per
+    # token per 5 minutes). Separate short transaction: never blocks the
+    # resolve if it is slow, and actually persists (autocommit-off would
+    # otherwise roll the UPDATE back at close).
+    try:
+        conn2 = _db_conn()
+        try:
+            with conn2:
+                with conn2.cursor() as cur:
+                    cur.execute(
+                        """UPDATE api_tokens SET last_used_at = now()
+                           WHERE id = %s AND (last_used_at IS NULL
+                                              OR last_used_at < now() - interval '5 minutes')""",
+                        (tid,),
+                    )
+        finally:
+            conn2.close()
+    except Exception as e:
+        logger.debug("last_used touch failed (id=%s): %s", tid, e)
+    return row
+
+
+def is_hash_revoked(token_hash: str) -> bool:
+    """True when an api_tokens row with this hash exists AND is revoked.
+    Used by the legacy users.token_hash resolver so revoking an imported
+    legacy row actually kills the plaintext cm_<random> token (single source
+    of truth for revocation)."""
+    if not token_hash:
+        return False
+    ensure_table()
+    conn = _db_conn()
+    try:
+        with conn.cursor() as cur:
             cur.execute(
-                """UPDATE api_tokens SET last_used_at = now()
-                   WHERE id = %s AND (last_used_at IS NULL
-                                      OR last_used_at < now() - interval '5 minutes')""",
-                (tid,),
+                "SELECT revoked_at IS NOT NULL FROM api_tokens WHERE token_hash = %s",
+                (token_hash,),
             )
-            return row
+            r = cur.fetchone()
+            return bool(r and r[0])
+    finally:
+        conn.close()
+
+
+def revoke_hash(token_hash: str, revoked_by: str) -> int:
+    """Mark any api_tokens row holding this hash revoked (used on rotate so
+    the stale import row does not linger as active). Returns rows revoked."""
+    if not token_hash:
+        return 0
+    ensure_table()
+    conn = _db_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE api_tokens SET revoked_at = now(), revoked_by = %s "
+                    "WHERE token_hash = %s AND revoked_at IS NULL",
+                    (revoked_by, token_hash),
+                )
+                return cur.rowcount
     finally:
         conn.close()
 
