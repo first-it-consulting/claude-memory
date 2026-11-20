@@ -186,3 +186,17 @@ def test_transcript_skips_request_blobs_tool_results_and_summaries(hook, tmp_pat
     assert users == ["- second request", "- Call the claude-memory checkpoint tool please"]
     assert "Tool loaded." not in notes and "caveat" not in notes and "hook output" not in notes
     assert "continued from a previous" not in notes
+
+
+def test_norm_harness(main_mod):
+    f = main_mod._norm_harness
+    assert f("  Claude ") == "claude"
+    assert f("QWEN") == "qwen"
+    assert f("pi") == "pi"
+    assert f("") == ""
+    assert f("   ") == ""
+    assert f("x" * 33) == ""          # too long -> dropped
+    assert f("x" * 32) == "x" * 32    # exactly at the cap passes
+    assert f("bad\x01harness") == ""  # control char -> dropped
+    assert f("bell\x07") == ""
+    assert f("del\x7f") == ""
