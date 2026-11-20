@@ -135,7 +135,7 @@ async def delete_memory(memory_id: str) -> str:
 
 
 @mcp.tool()
-async def checkpoint(session_id: str, state: str, project: str = "") -> str:
+async def checkpoint(session_id: str, state: str, project: str = "", harness: str = "") -> str:
     """Save your working state for this session. It is stored instantly and
     re-injected after context compaction, so you can continue where you were.
 
@@ -154,7 +154,9 @@ async def checkpoint(session_id: str, state: str, project: str = "") -> str:
     session ends they are copied into long-term memory for all agents.
 
     session_id: the id from your memory briefing. Without a briefing, use
-    "<project>-<YYYYMMDD>". project: repo or topic name (optional)."""
+    "<project>-<YYYYMMDD>". project: repo or topic name (optional).
+    harness: which agent tool you are: claude, codex, qwen or pi (optional).
+    It labels the session; omit it and an already-known harness is kept."""
     session_id = (session_id or "").strip()
     state = (state or "").strip()
     if not session_id or not state:
@@ -162,8 +164,8 @@ async def checkpoint(session_id: str, state: str, project: str = "") -> str:
     if len(state) > settings.checkpoint_max_chars:
         return (f"Checkpoint too long ({len(state)} chars, max {settings.checkpoint_max_chars}). "
                 "Condense it — drop finished detail, keep goal, decisions, dead ends, next steps.")
-    row = await _to_thread(mem_store.put_checkpoint, session_id, state, project.strip(), "",
-                           auth.get_principal().user_id)
+    row = await _to_thread(mem_store.put_checkpoint, session_id, state, project.strip(),
+                           _norm_harness(harness), auth.get_principal().user_id)
     if row is None:
         return f"session_id {session_id} belongs to another workspace."
     return json.dumps({"ok": True, "session_id": row["session_id"], "updated_at": str(row["updated_at"])})
@@ -560,6 +562,17 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 40].rstrip() + "\n… [truncated by claude-memory]"
+
+
+def _norm_harness(value: str) -> str:
+    """Normalize a self-declared harness name: strip + lowercase, max 32 chars,
+    no control characters. Anything invalid becomes empty — a bad harness must
+    never make a checkpoint fail. Empty never overwrites a known harness
+    (see memory._upsert_session)."""
+    h = (value or "").strip().lower()
+    if not h or len(h) > 32 or any(ord(c) < 32 or ord(c) == 127 for c in h):
+        return ""
+    return h
 
 
 async def _build_briefing(session_id: str, project: str, source: str, harness: str, tool: str,

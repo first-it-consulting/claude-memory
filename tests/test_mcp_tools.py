@@ -131,3 +131,26 @@ def test_add_memory_is_still_queued(server):
 
 def test_add_memory_rejects_invalid_category(server):
     assert "Invalid category" in call_tool(server, "add_memory", content="x", category="nonsense")
+
+
+def test_checkpoint_records_harness(server):
+    call_tool(server, "checkpoint", session_id="h1", state="## Goal\nx", harness="CLAUDE ")
+    out = call_tool(server, "get_checkpoint", session_id="h1")
+    assert "· claude" in out.splitlines()[0]
+
+
+def test_checkpoint_empty_harness_keeps_known_value(server):
+    # Pins the COALESCE(NULLIF(...)) upsert: a later write without a harness
+    # must never erase the registered one.
+    call_tool(server, "checkpoint", session_id="h2", state="v1", harness="pi")
+    call_tool(server, "checkpoint", session_id="h2", state="v2")
+    out = call_tool(server, "get_checkpoint", session_id="h2")
+    assert "· pi" in out.splitlines()[0]
+
+
+def test_checkpoint_invalid_harness_is_dropped_not_fatal(server):
+    out = json.loads(call_tool(server, "checkpoint", session_id="h3",
+                               state="v1", harness="bad\x01harness"))
+    assert out["ok"] is True  # the checkpoint itself still succeeds
+    header = call_tool(server, "get_checkpoint", session_id="h3").splitlines()[0]
+    assert "bad" not in header
