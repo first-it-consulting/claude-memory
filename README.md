@@ -312,5 +312,5 @@ adapters/                      # harness hook adapters (see adapters/README.md)
 
 ## License
 
-Internal-use project (no license file included). Image registry:
+Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE). Image registry:
 `registry.example.internal/first-it-consulting/claude-memory`.
