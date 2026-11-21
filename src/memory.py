@@ -126,6 +126,31 @@ def _ensure_schema() -> None:
         logger.warning("_ensure_schema failed (non-fatal): %s", e)
 
 
+def _ensure_trgm(conn) -> None:
+    """Exact-identifier support (bean 4aqv): pg_trgm index on the raw memory
+    text. Additive and idempotent; if the role cannot CREATE EXTENSION we
+    degrade to mem0's own simple-FTS GIN index and log once."""
+    global _trgm_ready
+    if _trgm_ready is not None:
+        return
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS mem0_data_trgm_idx ON mem0"
+                    " USING gin ((payload->>'data') gin_trgm_ops)"
+                )
+        _trgm_ready = True
+    except Exception:  # noqa: BLE001 - degrade, never break startup
+        conn.rollback()
+        _trgm_ready = False
+        logger.warning(
+            "pg_trgm unavailable for this role - keyword search uses FTS only "
+            "(superuser: CREATE EXTENSION pg_trgm; then restart to add the index)"
+        )
+
+
 def _load_rules_from_db() -> dict[str, list[str]]:
     conn = _db_conn()
     try:
@@ -312,6 +337,7 @@ def _provider_host(url: str) -> str:
 # and refuse writes until it is fixed (re-embed path: export, switch model,
 # re-embed - see README).
 _dim_guard: dict = {"ok": True, "msg": ""}
+_trgm_ready: bool | None = None
 
 
 def embedding_guard() -> dict:
@@ -565,6 +591,93 @@ def timeline(
         "self": recs[pos],
         "after": recs[pos + 1 : pos + 1 + w],
     }
+
+
+def keyword_hits(query: str, user_id: str | None = None, limit: int = 10) -> list[dict]:
+    """Exact-identifier keyword path (bean 4aqv): Postgres simple-FTS over
+    mem0's text_lemmatized GIN index plus an ILIKE substring match (pg_trgm
+    when available). Returns rows shaped like mem0 search results."""
+    q = (query or "").strip()[:200]
+    if not q:
+        return []
+    tenant = _tenant(user_id)
+    tenants = [tenant]
+    if tenant != settings.shared_tenant_id:
+        tenants.append(settings.shared_tenant_id)
+    conn = _db_conn()
+    try:
+        _ensure_trgm(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, payload,
+                       ts_rank(
+                           to_tsvector('simple',
+                                       coalesce(payload->>'text_lemmatized','')),
+                           plainto_tsquery('simple', %s)
+                       ) AS rank
+                FROM mem0
+                WHERE (
+                        to_tsvector('simple',
+                                    coalesce(payload->>'text_lemmatized',''))
+                        @@ plainto_tsquery('simple', %s)
+                        OR payload->>'data' ILIKE '%%' || %s || '%%'
+                      )
+                  AND payload->>'user_id' = ANY(%s)
+                ORDER BY rank DESC, payload->>'updated_at' DESC
+                LIMIT %s
+                """,
+                (q, q, q, tenants, limit),
+            )
+            out = []
+            for rid, payload, rank in cur.fetchall():
+                p = payload or {}
+                out.append(
+                    {
+                        "id": str(rid),
+                        "memory": p.get("data", ""),
+                        "score": float(rank or 0),
+                        "created_at": p.get("created_at"),
+                        "updated_at": p.get("updated_at"),
+                        "user_id": p.get("user_id"),
+                        "agent_id": p.get("agent_id"),
+                        "metadata": {
+                            k: p[k]
+                            for k in ("category", "tags", "role")
+                            if p.get(k) is not None
+                        },
+                        "match": "keyword",
+                    }
+                )
+            return out
+    finally:
+        conn.close()
+
+
+def _rrf_merge(sem: list[dict], kw: list[dict], limit: int) -> list[dict]:
+    """Reciprocal-rank fusion (k=60): deterministic hybrid ranking, no
+    cross-provider score calibration needed."""
+    scores: dict[str, float] = {}
+    items: dict[str, dict] = {}
+    for rank, r in enumerate(sem):
+        rid = str(r.get("id"))
+        scores[rid] = scores.get(rid, 0.0) + 1.0 / (60 + rank)
+        items[rid] = r
+    for rank, r in enumerate(kw):
+        rid = str(r.get("id"))
+        scores[rid] = scores.get(rid, 0.0) + 1.0 / (60 + rank)
+        items.setdefault(rid, r)
+    out = sorted(items.values(), key=lambda r: scores[str(r.get("id"))], reverse=True)
+    for r in out:
+        r["hybrid_score"] = round(scores[str(r.get("id"))], 5)
+    return out[:limit]
+
+
+def search_hybrid(query: str, limit: int = 5, user_id: str | None = None) -> list[dict]:
+    """Semantic + keyword (exact identifiers) merged with RRF."""
+    sem = search(query, limit=limit * 2, user_id=user_id)
+    kw = keyword_hits(query, user_id=user_id, limit=limit * 2)
+    return _rrf_merge(sem, kw, limit)
 
 
 def _get_all_one(m: Memory, tenant: str, agent_id: str) -> list[dict]:

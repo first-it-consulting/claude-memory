@@ -201,7 +201,7 @@ writes a line-by-line report to the job run (`details`, shown in the UI's Jobs t
 ## API reference
 
 ### MCP (`POST /mcp`)
-Standard Model Context Protocol (stateless HTTP, SSE or JSON transport). Tools: `add_memory`, `search_memory` (returns `[score] date · category · #tags · id=… — text`; `mode="index"` returns 140-char snippets + an estimated full-text token count per hit — then `fetch_memories(ids=…)` pulls only what you actually read), `memory_timeline` (what was stored just before/after a memory), `get_all_memories` (paged, default 50), `update_memory`, `delete_memory`, `checkpoint`, `get_checkpoint`. Server `instructions` explain the checkpoint workflow to clients without hooks.
+Standard Model Context Protocol (stateless HTTP, SSE or JSON transport). Tools: `add_memory`, `search_memory` (returns `[score] date · category · #tags · id=… — text`; `mode="index"` returns 140-char snippets + an estimated full-text token count per hit — then `fetch_memories(ids=…)` pulls only what you actually read), `memory_timeline` (what was stored just before/after a memory), `search_memory hybrid=true` (exact-identifier keyword path - Postgres FTS + pg_trgm - fused with the semantic ranking via reciprocal-rank fusion; use it when an error code or identifier must match exactly), `get_all_memories` (paged, default 50), `update_memory`, `delete_memory`, `checkpoint`, `get_checkpoint`. Server `instructions` explain the checkpoint workflow to clients without hooks.
 
 ### REST (`/api/*` — requires bearer auth; every route is tenant-scoped)
 Admins may add `?tenant=<id>` or `?scope=all` where marked *(admin scope)*.
@@ -219,6 +219,7 @@ Admins may add `?tenant=<id>` or `?scope=all` where marked *(admin scope)*.
 | POST | `/api/users/{id}/rotate-token` *(admin)* | New API token (shown once, old one dies) |
 | GET | `/api/memories` | List or search memories (`?q=&sort=newest|oldest|relevance&category=&agent_id=&tag=`); `?format=index` → compact rows (`id`, `snippet`, `score`, `est_tokens_full`); `?ids=a,b` → visible records by id *(admin scope)* |
 | GET | `/api/memories/timeline/{id}` | Chronological neighbours (`?window=3`, own workspace + shared space) |
+| (any search) | `?hybrid=1` | additionally run the exact keyword path (FTS + `pg_trgm` ILIKE) and fuse rankings (RRF) |
 | POST | `/api/memories` | Add a memory (`{"content": "...", "agent_id": "..."}`, admin: `"shared": true` → shared space) — queued if Redis is enabled |
 | PUT | `/api/memories/{id}` | Edit memory content (own tenant only) |
 | PATCH | `/api/memories/{id}/tags` | Replace tags (`{"tags": [...]}`, own tenant only) |

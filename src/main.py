@@ -86,15 +86,22 @@ async def add_memory(
 
 
 @mcp.tool()
-async def search_memory(query: str, limit: int = 5, mode: str = "full") -> str:
-    """Search memory semantically. mode="full" (default) returns one line per
-    fact: [score] date · category · #tags · id=<id> — text
+async def search_memory(
+    query: str, limit: int = 5, mode: str = "full", hybrid: bool = False
+) -> str:
+    """Search memory. mode="full" (default) returns one line per fact:
+    [score] date · category · #tags · id=<id> — text
     mode="index" returns token-cheap rows (snippet + estimated full-text size)
     - pull only what you need with fetch_memories(ids=...). Saves context when
-    you are browsing. Use the id with update_memory / delete_memory. Prefer
-    newer facts when two conflict."""
+    you are browsing. hybrid=true also runs exact keyword search (error codes,
+    identifiers, function names) and fuses both rankings - use it when a plain
+    semantic search missed an exact string. Use the id with update_memory /
+    delete_memory. Prefer newer facts when two conflict."""
     results = await _to_thread(
-        mem_store.search, query, limit=limit, user_id=auth.get_principal().user_id
+        mem_store.search_hybrid if hybrid else mem_store.search,
+        query,
+        limit=limit,
+        user_id=auth.get_principal().user_id,
     )
     if not results:
         return "No memories found."
@@ -492,6 +499,8 @@ async def _scoped_search(q: str, limit: int, qs: dict, principal) -> list[dict]:
         tenants = await _to_thread(users_store.list_tenant_ids)
         return await _to_thread(mem_store.search_across, q, limit, tenants)
     tenant = mode[1] if mode[0] == "tenant" else principal.user_id
+    if qs.get("hybrid", "").strip() in ("1", "true", "yes"):
+        return await _to_thread(mem_store.search_hybrid, q, limit=limit, user_id=tenant)
     return await _to_thread(mem_store.search, q, limit=limit, user_id=tenant)
 
 
