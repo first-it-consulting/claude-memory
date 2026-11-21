@@ -4,6 +4,11 @@ variable "VERSION" {
   default = "0.1.0"
 }
 
+# Full commit sha served by GET /api/version (git rev-parse HEAD at build time).
+variable "GIT_SHA" {
+  default = "unknown"
+}
+
 # Registry prefix for the published tags. Override for other registries:
 #   REGISTRY=ghcr.io/<you> docker buildx bake ...
 variable "REGISTRY" {
@@ -17,7 +22,8 @@ group "default" {
 target "image" {
   inherits = ["docker-metadata-action"]
   args = {
-    VERSION = "${VERSION}"
+    VERSION    = "${VERSION}"
+    GIT_SHA    = "${GIT_SHA}"
   }
   tags = [
     "${REGISTRY}/claude-memory:${VERSION}",

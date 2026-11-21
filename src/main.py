@@ -1115,6 +1115,14 @@ async def app(scope, receive, send):
             await _send_response(send, 200, hdrs, json.dumps(payload).encode())
             return
 
+        # GET /api/version — build metadata for the UI footer. Auth like every
+        # other /api route: no anonymous fingerprinting.
+        if path == "/api/version" and method == "GET":
+            import version as ver_mod
+
+            await _send_response(send, *_json_response(ver_mod.info()))
+            return
+
         # Personal API tokens — self-service for any caller...
         if path == "/api/me/tokens" or path.startswith("/api/me/tokens/"):
             if await _tokens_api(
