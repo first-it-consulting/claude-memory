@@ -1,5 +1,6 @@
 import json
 import logging
+import pathlib
 import threading
 import time
 
@@ -248,6 +249,80 @@ def get_job_run(run_id: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
+def _api_key(inline: str, file: str) -> str:
+    """Key from a mounted file (K8s secret) wins over the inline env value.
+    Never log the result."""
+    if file:
+        try:
+            return pathlib.Path(file).read_text().strip()
+        except OSError:
+            return ""
+    return inline
+
+
+def _llm_config() -> LlmConfig:
+    if settings.llm_provider == "openai":
+        cfg = {
+            "model": settings.llm_model,
+            "api_key": _api_key(settings.llm_api_key, settings.llm_api_key_file),
+        }
+        if settings.llm_base_url:
+            cfg["openai_base_url"] = settings.llm_base_url
+        return LlmConfig(provider="openai", config=cfg)
+    return LlmConfig(
+        provider="ollama",
+        config={
+            "model": settings.ollama_model,
+            "ollama_base_url": settings.ollama_base_url,
+        },
+    )
+
+
+def _embedder_config() -> EmbedderConfig:
+    if settings.embed_provider == "openai":
+        cfg = {
+            "model": settings.embed_model,
+            "api_key": _api_key(settings.embed_api_key, settings.embed_api_key_file),
+        }
+        if settings.embed_base_url:
+            cfg["openai_base_url"] = settings.embed_base_url
+        # embedding_dims deliberately NOT set: non-matryoshka backends
+        # (vLLM, TEI, ...) reject the `dimensions` request parameter. The
+        # dimension guard in get_memory() verifies the width against the
+        # pgvector column instead.
+        return EmbedderConfig(provider="openai", config=cfg)
+    return EmbedderConfig(
+        provider="ollama",
+        config={
+            "model": settings.ollama_embed_model,
+            "ollama_base_url": settings.ollama_base_url,
+            "embedding_dims": _EMBEDDING_DIMS,
+        },
+    )
+
+
+def _provider_host(url: str) -> str:
+    from urllib.parse import urlparse
+
+    return urlparse(url).netloc or url
+
+
+# Dimension guard: the pgvector column is fixed-width. An embedder that
+# returns another width would corrupt writes, so we probe once at startup
+# and refuse writes until it is fixed (re-embed path: export, switch model,
+# re-embed - see README).
+_dim_guard: dict = {"ok": True, "msg": ""}
+
+
+def embedding_guard() -> dict:
+    return dict(_dim_guard)
+
+
+def _guard_for_writes() -> None:
+    if not _dim_guard["ok"]:
+        raise RuntimeError(f"writes disabled: {_dim_guard['msg']}")
+
+
 def _build_config() -> MemoryConfig:
     return MemoryConfig(
         custom_instructions=settings.mem0_custom_instructions or None,
@@ -260,21 +335,8 @@ def _build_config() -> MemoryConfig:
                 "hnsw": True,
             },
         ),
-        llm=LlmConfig(
-            provider="ollama",
-            config={
-                "model": settings.ollama_model,
-                "ollama_base_url": settings.ollama_base_url,
-            },
-        ),
-        embedder=EmbedderConfig(
-            provider="ollama",
-            config={
-                "model": settings.ollama_embed_model,
-                "ollama_base_url": settings.ollama_base_url,
-                "embedding_dims": _EMBEDDING_DIMS,
-            },
-        ),
+        llm=_llm_config(),
+        embedder=_embedder_config(),
     )
 
 
@@ -290,8 +352,46 @@ def get_memory() -> Memory:
             if _mem is None:
                 m = Memory(config=_build_config())
                 _apply_ollama_timeout(m)
+                logger.info(
+                    "providers: embed=%s (%s / %s) llm=%s (%s / %s)",
+                    settings.embed_provider,
+                    _provider_host(settings.embed_base_url or settings.ollama_base_url),
+                    settings.embed_model or settings.ollama_embed_model,
+                    settings.llm_provider,
+                    _provider_host(settings.llm_base_url or settings.ollama_base_url),
+                    settings.llm_model or settings.ollama_model,
+                )
+                if settings.embed_provider == "openai":
+                    _probe_dims(m)
                 _mem = m
     return _mem
+
+
+def _probe_dims(m: Memory) -> None:
+    """Embed one probe text and compare against the pgvector column width."""
+    global _dim_guard
+    try:
+        n = len(m.embedding_model.embed("dimension probe", memory_action="add"))
+    except Exception as exc:  # noqa: BLE001 - any probe failure blocks writes
+        _dim_guard = {
+            "ok": False,
+            "msg": (
+                f"embedder probe failed ({type(exc).__name__}); check "
+                "EMBED_BASE_URL/EMBED_MODEL/EMBED_API_KEY"
+            ),
+        }
+        logger.error("dimension guard: %s", _dim_guard["msg"])
+        return
+    if n != _EMBEDDING_DIMS:
+        _dim_guard = {
+            "ok": False,
+            "msg": (
+                f"embed model {settings.embed_model} returns {n} dims, the "
+                f"pgvector column is {_EMBEDDING_DIMS}; switch the model or "
+                "re-embed the store (export -> fresh collection -> re-add)"
+            ),
+        }
+        logger.error("dimension guard: %s", _dim_guard["msg"])
 
 
 def _apply_ollama_timeout(m: Memory) -> None:
@@ -347,6 +447,7 @@ def add(
     tags: list | None = None,
     extra_metadata: dict | None = None,
 ) -> dict:
+    _guard_for_writes()
     m = get_memory()
     metadata: dict = dict(extra_metadata or {})
     if category:
@@ -491,6 +592,7 @@ def get_owner(memory_id: str) -> str | None:
 
 
 def update(memory_id: str, content: str) -> dict:
+    _guard_for_writes()
     m = get_memory()
     return m.update(memory_id, content)
 

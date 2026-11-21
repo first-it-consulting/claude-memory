@@ -65,6 +65,9 @@ async def add_memory(
     can distort technical details — only for long, chatty input)."""
     if category and category not in mem_store.VALID_CATEGORIES:
         return f"Invalid category '{category}'. Valid: {', '.join(sorted(mem_store.VALID_CATEGORIES - {''}))}"
+    g = mem_store.embedding_guard()
+    if not g["ok"]:
+        return f"writes disabled: {g['msg']}"
     # Always queue: an inferred add takes tens of seconds on CPU Ollama and the
     # caller doesn't need the extraction result. The tenant travels with the
     # job so the async write lands in the caller's workspace.
@@ -240,6 +243,14 @@ _mcp_handler = _starlette_app.router.routes[0].app  # type: ignore[attr-defined]
 # ---------------------------------------------------------------------------
 # REST API helpers
 # ---------------------------------------------------------------------------
+
+
+def _write_guard_block():
+    """503 + clear message while the embedding dimension guard is tripped."""
+    g = mem_store.embedding_guard()
+    if not g["ok"]:
+        return _json_response({"error": f"writes disabled: {g['msg']}"}, status=503)
+    return None
 
 
 def _json_response(data, status=200):
@@ -1069,8 +1080,18 @@ async def app(scope, receive, send):
 
     # Health — no auth
     if path == "/health":
+        g = mem_store.embedding_guard()
         await _send_response(
-            send, *_json_response({"status": "ok", "service": "claude-memory"})
+            send,
+            *_json_response(
+                {
+                    "status": "ok" if g["ok"] else "degraded",
+                    "service": "claude-memory",
+                    "embed_provider": settings.embed_provider,
+                    "llm_provider": settings.llm_provider,
+                    "embedding_guard": g,
+                }
+            ),
         )
         return
 
@@ -1653,6 +1674,10 @@ async def app(scope, receive, send):
         # POST /api/memories — add a memory. {"shared": true} (admin only)
         # publishes into the shared space every tenant can read.
         if path == "/api/memories" and method == "POST":
+            blocked = _write_guard_block()
+            if blocked:
+                await _send_response(send, *blocked)
+                return
             raw = await _read_body(receive)
             shared = False
             # Support both form-encoded and JSON body
@@ -1694,6 +1719,10 @@ async def app(scope, receive, send):
 
             # PUT /api/memories/{id} — edit content
             if method == "PUT":
+                blocked = _write_guard_block()
+                if blocked:
+                    await _send_response(send, *blocked)
+                    return
                 raw = await _read_body(receive)
                 try:
                     body_data = json.loads(raw)

@@ -16,6 +16,20 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:7b"
     ollama_embed_model: str = "nomic-embed-text"
+    # Provider switch per role (bean homelab-saec): "ollama" (default, the
+    # OLLAMA_* settings above) or "openai" = any OpenAI-compatible endpoint
+    # (LiteLLM, vLLM, TEI, Ollama's own /v1, ...). *_API_KEY_FILE wins over
+    # *_API_KEY (secret mounted as a file); keys are never logged.
+    embed_provider: str = "ollama"
+    embed_base_url: str = ""  # openai provider, e.g. https://litellm.../v1
+    embed_model: str = ""  # required when embed_provider=openai
+    embed_api_key: str = ""
+    embed_api_key_file: str = ""
+    llm_provider: str = "ollama"
+    llm_base_url: str = ""
+    llm_model: str = ""  # required when llm_provider=openai
+    llm_api_key: str = ""
+    llm_api_key_file: str = ""
     ollama_timeout: float = (
         300.0  # seconds per Ollama request; mem0's default is unbounded
     )
