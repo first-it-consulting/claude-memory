@@ -30,7 +30,7 @@ Local-first tools (e.g. [claude-mem](https://github.com/thedotmack/claude-mem)) 
 
 ## Features
 
-- **MCP tools**: `add_memory`, `search_memory`, `get_all_memories`, `update_memory`, `delete_memory`, `checkpoint`, `get_checkpoint`. Works with any MCP client (Claude Code, Qwen, Codex, Cursor, …).
+- **MCP tools**: `add_memory`, `search_memory` (also `mode="index"` for token-cheap rows + `fetch_memories` for full text), `memory_timeline`, `get_all_memories`, `update_memory`, `delete_memory`, `checkpoint`, `get_checkpoint`. Works with any MCP client (Claude Code, Qwen, Codex, Cursor, …).
 - **Session working memory**: `checkpoint` stores an agent's current working state (goal, decisions, dead ends, next steps) instantly, without the queue or LLM, so it survives context compaction. It's re-injected by the harness hooks.
 - **Harness hooks**: `/api/hooks/*` endpoints plus thin adapters for Claude Code, Qwen Code, Codex and Pi (see [`adapters/`](adapters/README.md)). They give each session a briefing at start, re-inject the checkpoint after compaction, and recall relevant memories per prompt.
   Set `BRIEFING_TOKEN_BUDGET` (e.g. `600`) to cap that start briefing to an estimated token budget (chars/4): it becomes a compact index - session instructions, checkpoint (truncated if oversized) and one short `id=`-bearing line per relevant memory, full text via `search_memory`. Default `0` keeps the classic full briefing.
@@ -201,7 +201,7 @@ writes a line-by-line report to the job run (`details`, shown in the UI's Jobs t
 ## API reference
 
 ### MCP (`POST /mcp`)
-Standard Model Context Protocol (stateless HTTP, SSE or JSON transport). Tools: `add_memory`, `search_memory` (returns `[score] date · category · #tags · id=… — text`), `get_all_memories` (paged, default 50), `update_memory`, `delete_memory`, `checkpoint`, `get_checkpoint`. Server `instructions` explain the checkpoint workflow to clients without hooks.
+Standard Model Context Protocol (stateless HTTP, SSE or JSON transport). Tools: `add_memory`, `search_memory` (returns `[score] date · category · #tags · id=… — text`; `mode="index"` returns 140-char snippets + an estimated full-text token count per hit — then `fetch_memories(ids=…)` pulls only what you actually read), `memory_timeline` (what was stored just before/after a memory), `get_all_memories` (paged, default 50), `update_memory`, `delete_memory`, `checkpoint`, `get_checkpoint`. Server `instructions` explain the checkpoint workflow to clients without hooks.
 
 ### REST (`/api/*` — requires bearer auth; every route is tenant-scoped)
 Admins may add `?tenant=<id>` or `?scope=all` where marked *(admin scope)*.
@@ -217,7 +217,8 @@ Admins may add `?tenant=<id>` or `?scope=all` where marked *(admin scope)*.
 | POST | `/api/users` *(admin)* | Create a tenant (`{"id", "name", "role"}`) — returns its API token **once** |
 | GET/PATCH/DELETE | `/api/users/{id}` *(admin)* | Read / change (name, role, disabled) / remove a tenant |
 | POST | `/api/users/{id}/rotate-token` *(admin)* | New API token (shown once, old one dies) |
-| GET | `/api/memories` | List or search memories (`?q=&sort=newest|oldest|relevance&category=&agent_id=&tag=`) *(admin scope)* |
+| GET | `/api/memories` | List or search memories (`?q=&sort=newest|oldest|relevance&category=&agent_id=&tag=`); `?format=index` → compact rows (`id`, `snippet`, `score`, `est_tokens_full`); `?ids=a,b` → visible records by id *(admin scope)* |
+| GET | `/api/memories/timeline/{id}` | Chronological neighbours (`?window=3`, own workspace + shared space) |
 | POST | `/api/memories` | Add a memory (`{"content": "...", "agent_id": "..."}`, admin: `"shared": true` → shared space) — queued if Redis is enabled |
 | PUT | `/api/memories/{id}` | Edit memory content (own tenant only) |
 | PATCH | `/api/memories/{id}/tags` | Replace tags (`{"tags": [...]}`, own tenant only) |

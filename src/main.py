@@ -86,16 +86,57 @@ async def add_memory(
 
 
 @mcp.tool()
-async def search_memory(query: str, limit: int = 5) -> str:
-    """Search memory semantically. Returns top matching facts, one per line:
-    [score] date · category · #tags · id=<id> — text
-    Use the id with update_memory / delete_memory. Prefer newer facts when two conflict."""
+async def search_memory(query: str, limit: int = 5, mode: str = "full") -> str:
+    """Search memory semantically. mode="full" (default) returns one line per
+    fact: [score] date · category · #tags · id=<id> — text
+    mode="index" returns token-cheap rows (snippet + estimated full-text size)
+    - pull only what you need with fetch_memories(ids=...). Saves context when
+    you are browsing. Use the id with update_memory / delete_memory. Prefer
+    newer facts when two conflict."""
     results = await _to_thread(
         mem_store.search, query, limit=limit, user_id=auth.get_principal().user_id
     )
     if not results:
         return "No memories found."
+    if mode == "index":
+        lines = []
+        for r in results:
+            text = r.get("memory", r.get("text", ""))
+            est = max(1, len(text) // 4)
+            line = _format_memory_line(r, with_id=True, max_chars=140)
+            lines.append(f"{line} (~{est}tok full)")
+        return "\n".join(lines) + '\nFull text: fetch_memories(ids="<id>,...")'
     return "\n".join(_format_memory_line(r, with_id=True) for r in results)
+
+
+@mcp.tool()
+async def fetch_memories(ids: str) -> str:
+    """Fetch full records by id (comma-separated; ids come from search_memory
+    mode=index). Second step of the token-efficient two-step search; unknown
+    ids are skipped."""
+    wanted = [i.strip() for i in ids.split(",") if i.strip()]
+    recs = await _to_thread(mem_store.get_by_ids, wanted, auth.get_principal().user_id)
+    if not recs:
+        return "No memories for those ids."
+    # no max_chars: full text
+    return "\n\n".join(_format_memory_line(r, with_id=True) for r in recs)
+
+
+@mcp.tool()
+async def memory_timeline(id: str, window: int = 3) -> str:
+    """What was stored just before/after this memory (same workspace + shared
+    space), chronological. Helps walk a thread of related notes."""
+    tl = await _to_thread(mem_store.timeline, id, window, auth.get_principal().user_id)
+    if tl is None:
+        return "Memory not found (or not visible to you)."
+
+    def _fmt(r):
+        return _format_memory_line(r, with_id=True, max_chars=140)
+
+    parts = [_fmt(r) for r in tl["before"]]
+    parts.append(">>> " + _fmt(tl["self"]))
+    parts.extend(_fmt(r) for r in tl["after"])
+    return "\n".join(parts)
 
 
 @mcp.tool()
@@ -678,6 +719,21 @@ def _extract_meta(r: dict) -> dict:
     # mem0 pgvector provider wraps: payload.metadata = {"metadata": {"category": "..."}}
     inner = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else None
     return inner if inner is not None else raw
+
+
+def _index_row(r: dict) -> dict:
+    """Token-cheap search row: identity + snippet + estimated full size."""
+    meta = _extract_meta(r)
+    text = r.get("memory", r.get("text", "")) or ""
+    return {
+        "id": r.get("id"),
+        "snippet": _condense(text, 140),
+        "score": r.get("score"),
+        "date": str(r.get("updated_at") or r.get("created_at") or "")[:10],
+        "category": meta.get("category", ""),
+        "tags": meta.get("tags") or [],
+        "est_tokens_full": max(1, len(text) // 4),
+    }
 
 
 def _memory_dict(r: dict) -> dict:
@@ -1635,8 +1691,20 @@ async def app(scope, receive, send):
             )
             return
 
-        # GET /api/memories — list / search
+        # GET /api/memories — list / search (?ids=a,b fetches visible records
+        # by id; ?format=index returns token-cheap rows for the two-step search)
         if path == "/api/memories" and method == "GET":
+            ids_param = qs.get("ids", "").strip()
+            if ids_param:
+                recs = await _to_thread(
+                    mem_store.get_by_ids,
+                    [i.strip() for i in ids_param.split(",") if i.strip()],
+                    principal.user_id,
+                )
+                await _send_response(
+                    send, *_json_response([_memory_dict(r) for r in recs])
+                )
+                return
             q = qs.get("q", "").strip()
             sort = qs.get("sort", "newest")  # newest | oldest | relevance
             filter_agent = qs.get("agent_id", "").strip()
@@ -1666,8 +1734,35 @@ async def app(scope, receive, send):
                     if filter_tag in (_extract_meta(r).get("tags") or [])
                 ]
 
+            if qs.get("format", "").strip() == "index":
+                await _send_response(
+                    send, *_json_response([_index_row(r) for r in results])
+                )
+                return
             await _send_response(
                 send, *_json_response([_memory_dict(r) for r in results])
+            )
+            return
+
+        # GET /api/memories/timeline/{id}?window=3 — chronological neighbours
+        if path.startswith("/api/memories/timeline/") and method == "GET":
+            tl_id = path[len("/api/memories/timeline/") :].strip("/")
+            window = _int(qs.get("window"), 3)
+            tl = await _to_thread(mem_store.timeline, tl_id, window, principal.user_id)
+            if tl is None:
+                await _send_response(
+                    send, *_json_response({"error": "not found"}, status=404)
+                )
+                return
+            await _send_response(
+                send,
+                *_json_response(
+                    {
+                        "before": [_memory_dict(r) for r in tl["before"]],
+                        "self": _memory_dict(tl["self"]),
+                        "after": [_memory_dict(r) for r in tl["after"]],
+                    }
+                ),
             )
             return
 
