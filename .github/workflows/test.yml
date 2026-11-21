@@ -83,7 +83,8 @@ jobs:
         run: |
           mkdir -p /tmp/pi && cp adapters/pi/agent-memory.ts /tmp/pi/ && cd /tmp/pi
           npm init -y >/dev/null
-          npm install --no-audit --no-fund @earendil-works/pi-coding-agent typebox typescript @types/node
+          # pinned: a transitive @aws-sdk tarball briefly 404ed on npmjs on 2026-11-21 and broke fresh installs; bump manually per release (not tracked by Renovate)
+          npm install --no-audit --no-fund @earendil-works/pi-coding-agent@1.6.0 typebox typescript @types/node
           npx tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution nodenext \
             --skipLibCheck agent-memory.ts
 
