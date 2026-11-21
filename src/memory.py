@@ -535,6 +535,38 @@ def search_across(
     ]
 
 
+def get_by_ids(ids: list[str], user_id: str | None = None) -> list[dict]:
+    """Full records for the given ids, restricted to the caller's tenant.
+    Unknown or foreign ids are silently skipped (no existence leak)."""
+    wanted = {str(i) for i in ids if str(i).strip()}
+    if not wanted:
+        return []
+    out = [r for r in get_all(user_id=user_id) if str(r.get("id")) in wanted]
+    order = {str(i): n for n, i in enumerate(ids)}
+    out.sort(key=lambda r: order.get(str(r.get("id")), len(order)))
+    return out
+
+
+def timeline(
+    memory_id: str, window: int = 3, user_id: str | None = None
+) -> dict | None:
+    """Chronological neighbours of a memory inside the caller's view
+    (own tenant + shared space): what was stored just before/after it."""
+    recs = get_all(user_id=user_id)
+    recs.sort(key=lambda r: str(r.get("created_at") or ""))
+    pos = next(
+        (n for n, r in enumerate(recs) if str(r.get("id")) == str(memory_id)), -1
+    )
+    if pos < 0:
+        return None
+    w = max(0, min(int(window), 20))
+    return {
+        "before": recs[max(0, pos - w) : pos],
+        "self": recs[pos],
+        "after": recs[pos + 1 : pos + 1 + w],
+    }
+
+
 def _get_all_one(m: Memory, tenant: str, agent_id: str) -> list[dict]:
     filters = {"user_id": tenant}
     if agent_id:

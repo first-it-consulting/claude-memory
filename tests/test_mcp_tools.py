@@ -16,6 +16,8 @@ EXPECTED_TOOLS = {
     "delete_memory",
     "checkpoint",
     "get_checkpoint",
+    "fetch_memories",
+    "memory_timeline",
 }
 
 
