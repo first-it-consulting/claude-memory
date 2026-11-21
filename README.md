@@ -33,6 +33,7 @@ Local-first tools (e.g. [claude-mem](https://github.com/thedotmack/claude-mem)) 
 - **MCP tools**: `add_memory`, `search_memory`, `get_all_memories`, `update_memory`, `delete_memory`, `checkpoint`, `get_checkpoint`. Works with any MCP client (Claude Code, Qwen, Codex, Cursor, …).
 - **Session working memory**: `checkpoint` stores an agent's current working state (goal, decisions, dead ends, next steps) instantly, without the queue or LLM, so it survives context compaction. It's re-injected by the harness hooks.
 - **Harness hooks**: `/api/hooks/*` endpoints plus thin adapters for Claude Code, Qwen Code, Codex and Pi (see [`adapters/`](adapters/README.md)). They give each session a briefing at start, re-inject the checkpoint after compaction, and recall relevant memories per prompt.
+  Set `BRIEFING_TOKEN_BUDGET` (e.g. `600`) to cap that start briefing to an estimated token budget (chars/4): it becomes a compact index - session instructions, checkpoint (truncated if oversized) and one short `id=`-bearing line per relevant memory, full text via `search_memory`. Default `0` keeps the classic full briefing.
 - **Semantic memory** — stores, embeds (via Ollama), searches and deduplicates memories using mem0 + pgvector.
 - **Categorization & tagging** — classify memories (`project`, `feedback`, `reference`, `user`, `session`, `incident`) and tag them with free-form labels for filtering and metrics.
 - **REST API** — full CRUD over `/api/*` with bearer-token auth, plus JSON export/import.

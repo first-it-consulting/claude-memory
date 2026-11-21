@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     checkpoint_max_chars: int = 6000  # reject larger checkpoints so the model condenses
     auto_notes_max_chars: int = 3000  # pre-compaction auto-capture is truncated to this
     briefing_max_chars: int = 9000  # cap for /api/hooks/briefing output (~2.2k tokens)
+    # 0 = off (classic full briefing). >0: SessionStart briefing becomes a
+    # compact index (checkpoint + one short line per memory, id included)
+    # capped at this MANY ESTIMATED TOKENS (chars/4 heuristic).
+    briefing_token_budget: int = 0
     recall_min_score: float = 0.6  # cosine similarity (mem0 pgvector: 1 - distance)
     promoted_recall_penalty: float = (
         0.05  # auto-promoted checkpoint lines rank below deliberate memories
