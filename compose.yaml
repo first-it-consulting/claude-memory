@@ -1,7 +1,8 @@
 # Production-like stack for claude-memory. Bring your own Ollama (LLM +
 # nomic-embed-text embeddings). Copy to a server, set the env vars below
 # (or in a .env file next to it) and:
-#   docker compose up -d --build
+#   docker compose up -d            # published multi-arch image
+#   docker compose up -d --build    # build the working tree instead
 name: claude-memory
 services:
   postgres:
@@ -25,7 +26,10 @@ services:
 
   server:
     build: .
-    image: claude-memory:local
+    # Default: the published image (multi-arch). Plain 'docker compose up -d'
+    # pulls it; developers use 'docker compose up -d --build' to run the
+    # working tree.
+    image: ghcr.io/first-it-consulting/claude-memory:rolling
     restart: unless-stopped
     depends_on:
       postgres:
