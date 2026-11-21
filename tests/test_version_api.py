@@ -1,5 +1,7 @@
 """GET /api/version: auth required; serves the build identity."""
 
+import re
+
 import requests
 from conftest import TOKEN
 
@@ -14,8 +16,10 @@ def test_version_env_overrides(monkeypatch):
 
 def test_version_falls_back_to_version_txt(monkeypatch):
     monkeypatch.delenv("APP_VERSION", raising=False)
-    # Repo default until release-please bumps version.txt with the first release.
-    assert ver_mod.version() == "0.1.0"
+    # release-please bumps version.txt every release - assert the fallback
+    # path yields a version, never a pinned literal (pinned here it broke on
+    # the 0.1.1 bump).
+    assert re.fullmatch(r"\d+\.\d+\.\d+", ver_mod.version())
 
 
 def test_version_requires_auth(server):
@@ -32,5 +36,7 @@ def test_version_reports_version_and_commit(server):
     assert r.status_code == 200
     body = r.json()
     assert set(body) == {"version", "commit"}
-    assert body["version"] == "0.1.0"  # outside container builds: version.txt
+    # outside container builds the endpoint serves version.txt - compare
+    # against the module, not a literal that release-please bumps.
+    assert body["version"] == ver_mod.version()
     assert body["commit"]  # 'unknown' when GIT_SHA build arg was not set
