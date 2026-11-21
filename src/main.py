@@ -866,6 +866,11 @@ async def _build_briefing(
         min_score=settings.recall_min_score,
         user_id=tenant,
     )
+    if settings.briefing_token_budget > 0:
+        # Compact-index mode: same information, token-budgeted.
+        return _build_briefing_compact(
+            session_id, source, tool, lines[1:], hits, settings
+        )
     if hits:
         lines.append("")
         lines.append(
@@ -877,6 +882,75 @@ async def _build_briefing(
         )
 
     return _truncate("\n".join(lines), settings.briefing_max_chars)
+
+
+def _est_tokens(text: str) -> int:
+    """chars/4 heuristic (same order of magnitude the header comments use:
+    9000 chars ~ 2.2k tokens). No tokenizer dependency in the server."""
+    return max(1, len(text) // 4)
+
+
+def _build_briefing_compact(
+    session_id: str,
+    source: str,
+    tool: str,
+    head_lines: list[str],
+    hits: list[dict],
+    settings,
+) -> str:
+    """SessionStart briefing as a compact index within briefing_token_budget
+    estimated tokens: header + session_id + checkpoint (truncated if needed)
+    + one short id-bearing line per memory until the budget runs out. The
+    agent can always pull full text via search_memory / get_all_memories."""
+    budget = settings.briefing_token_budget
+    parts: list[str] = ["## Memory briefing (claude-memory, compact index)"]
+    used = _est_tokens(parts[0])
+    cp_lines = [ln for ln in head_lines if ln]
+    if session_id:
+        line = (
+            f"session_id: `{session_id}` - keep working state current with "
+            f"`{tool}`; re-injected after compaction."
+        )
+        parts.append(line)
+        used += _est_tokens(line)
+    if source == "compact":
+        line = "Context was just compacted; the checkpoint below is authoritative."
+        parts.append(line)
+        used += _est_tokens(line)
+
+    # checkpoint section (everything before the memory hits)
+    cp_text = "\n".join(cp_lines).strip()
+    cp_budget = max(0, budget - used - 60)  # leave room for >=1 index line + footer
+    cp_tok = 0
+    dropped_mem = len(hits)
+    mem_lines: list[str] = []
+    if cp_text:
+        if _est_tokens(cp_text) > cp_budget:
+            cp_text = _truncate(cp_text, cp_budget * 4)
+        cp_tok = _est_tokens(cp_text)
+        used += cp_tok
+        parts.append("")
+        parts.append(cp_text)
+
+    for r in hits:
+        line = "- " + _format_memory_line(r, with_id=True, max_chars=90)
+        tok = _est_tokens(line)
+        if used + tok > budget - 20:
+            dropped_mem = len(hits) - len(mem_lines)
+            break
+        mem_lines.append(line)
+        used += tok
+    if mem_lines:
+        parts.append("")
+        parts.append("### Memory index (full text: search_memory)")
+        parts.extend(mem_lines)
+    footer = (
+        f"(budget ~{budget} tok, used ~{used}: checkpoint ~{cp_tok}, "
+        f"memories {len(mem_lines)}/{len(hits)}, dropped {dropped_mem}; "
+        "estimate = chars/4)"
+    )
+    parts.append(footer)
+    return "\n".join(parts)
 
 
 async def _build_recall(
