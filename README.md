@@ -101,6 +101,11 @@ All settings come from environment variables (`.env` file is auto-loaded). See `
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint for embeddings. |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Model used for text inference / dedup. |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Model used for embeddings. |
+| `EMBED_PROVIDER` | `ollama` | `openai` switches embeddings to any OpenAI-compatible `/v1/embeddings` endpoint (LiteLLM, vLLM, TEI, Ollama's own `/v1`, ...). |
+| `EMBED_BASE_URL` / `EMBED_MODEL` / `EMBED_API_KEY`(`_FILE`) | *(empty)* | OpenAI-compatible embedder target; `*_API_KEY_FILE` (mounted secret) wins over the inline key. Keys are never logged. |
+| `LLM_PROVIDER` | `ollama` | `openai` switches the extraction/merge LLM to any OpenAI-compatible `/v1/chat/completions`. |
+| `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY`(`_FILE`) | *(empty)* | OpenAI-compatible LLM target (same key rules). |
+| dimension guard | — | The pgvector column is fixed 768 dims. With `EMBED_PROVIDER=openai` the server probe-embeds at startup; a mismatched model **refuses writes** (503 + `/health` "degraded") instead of corrupting the store. Re-embed path: export, point at the new model, re-add (no auto re-embed yet). |
 | `APP_PORT` | `8080` | Port the server listens on. |
 | `APP_BIND` | `127.0.0.1` | Host interface `APP_PORT` is published on. Loopback by default (localhost only); set `0.0.0.0` or an interface IP to expose it. |
 | `REDIS_URL` | *(empty)* | Set to enable the async write queue (requires a reachable Redis). |
