@@ -1366,13 +1366,20 @@ async def app(scope, receive, send):
             agents: dict = {}
             categories: dict = {}
             tags_count: dict = {}
+            # Distinct memories carrying at least one tag - NOT the sum of
+            # tag occurrences (that made the UI's 'untagged' go negative when
+            # memories carried several tags each).
+            tagged = 0
             for r in all_memories:
                 a = r.get("agent_id") or "unknown"
                 agents[a] = agents.get(a, 0) + 1
                 meta = _extract_meta(r)
                 c = meta.get("category", "") or "uncategorized"
                 categories[c] = categories.get(c, 0) + 1
-                for tag in meta.get("tags") or []:
+                tags = meta.get("tags") or []
+                if tags:
+                    tagged += 1
+                for tag in tags:
                     tags_count[tag] = tags_count.get(tag, 0) + 1
             await _send_response(
                 send,
@@ -1384,6 +1391,7 @@ async def app(scope, receive, send):
                         "by_agent": agents,
                         "by_category": categories,
                         "by_tag": tags_count,
+                        "tagged": tagged,
                     }
                 ),
             )
