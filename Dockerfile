@@ -4,6 +4,12 @@ FROM python:3.15-slim
 ARG VERSION=dev
 LABEL org.opencontainers.image.version="${VERSION}"
 
+# Build identity served by GET /api/version. APP_VERSION empty -> the runtime
+# falls back to version.txt (release-please 'simple' keeps it bumped).
+ARG APP_VERSION=
+ARG GIT_SHA=unknown
+ENV APP_VERSION="${APP_VERSION}" GIT_SHA="${GIT_SHA}"
+
 # Refresh Debian packages: the slim base digest can lag security uploads
 # (e.g. zlib1g CVEs); keeps the Trivy CRITICAL gate meaningful.
 RUN apt-get update \
@@ -20,6 +26,7 @@ COPY requirements-mcp.txt .
 RUN pip install --no-cache-dir -r requirements-mcp.txt \
     && pip uninstall -y pip
 
+COPY version.txt ./
 COPY src/*.py ./src/
 COPY src/scripts/*.py ./src/scripts/
 
