@@ -61,20 +61,36 @@ TOOLS=$(curl -sS -m 15 -X POST -H "Authorization: Bearer $ADMIN" -H 'Content-Typ
 grep -q add_memory <<<"$TOOLS" || die "MCP tools/list" "$TOOLS"
 ok "POST /mcp tools/list"
 
-# 6 exact write via MCP infer=false (single /api/embed, no LLM)
+# 6 two concurrent exact writes (MCP, infer=false): the first two writes on a
+# fresh DB used to race inside the pgvector collection setup
+# (pg_type_typname_nsp_index) and one job was dropped - bean v4al regression.
+# (REST POST always queues with infer=true, so both go through MCP here, which
+# honours infer=false and stores the exact text.)
 FACT="smoke-exact-fact-$TS"
-RES=$(curl -sS -m 15 -X POST -H "Authorization: Bearer $PAT" -H 'Content-Type: application/json' \
-  -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"add_memory\",\"arguments\":{\"content\":\"$FACT\",\"infer\":false}}}" "$BASE/mcp")
+FACT2="smoke-exact-fact2-$TS"
+mcp_add() { # token content outfile
+  curl -sS -m 15 -X POST -H "Authorization: Bearer $1" -H 'Content-Type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"add_memory\",\"arguments\":{\"content\":\"$2\",\"infer\":false}}}" "$BASE/mcp" >"$3"
+}
+R1=$(mktemp) R2=$(mktemp)
+mcp_add "$PAT" "$FACT" "$R1" & MCP_PID=$!
+mcp_add "$PAT" "$FACT2" "$R2" & MCP2_PID=$!
+wait $MCP_PID || die "MCP add_memory request" ""
+wait $MCP2_PID || die "MCP add_memory 2 request" ""
+RES=$(cat "$R1"); RES2=$(cat "$R2"); rm -f "$R1" "$R2"
 grep -q queued <<<"$RES" || die "MCP add_memory" "$RES"
+grep -q queued <<<"$RES2" || die "MCP add_memory 2" "$RES2"
 MID=""
 for _ in $(seq 1 40); do
   LIST=$(api GET "$PAT" /api/memories)
   MID=$(jq -r --arg f "$FACT" '[.[] | select(.memory | contains($f))][0].id // empty' <<<"$LIST")
-  [ -n "$MID" ] && break
+  MID2=$(jq -r --arg f "$FACT2" '[.[] | select(.memory | contains($f))][0].id // empty' <<<"$LIST")
+  [ -n "$MID" ] && [ -n "$MID2" ] && break
   sleep 2
 done
 [ -n "$MID" ] || die "memory never appeared in list" "$LIST"
-ok "MCP add (infer=false) stored exact text (pgvector write)"
+[ -n "$MID2" ] || die "concurrent second add dropped (v4al race)" "$LIST"
+ok "concurrent first MCP adds both stored (pgvector write, no catalog race)"
 
 # 7 semantic search path (embed stub -> pgvector cosine)
 api GET "$PAT" "/api/memories?q=$FACT" | grep -q "$FACT" || die "search q=" ""

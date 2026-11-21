@@ -175,8 +175,10 @@ def test_probe_dims_detects_mismatch(monkeypatch):
     assert "8 dims" in memory.embedding_guard()["msg"]
     with pytest.raises(RuntimeError):
         memory._guard_for_writes()
-    # restore for other tests in this module/session
-    monkeypatch.setattr(memory, "_dim_guard", {"ok": True, "msg": ""})
+    # restore for other tests in this module/session: PLAIN assignment, not
+    # monkeypatch - monkeypatch would restore the degraded value at teardown
+    # and 503 every later HTTP write test (found via bean v4al tests).
+    memory._dim_guard = {"ok": True, "msg": ""}
 
 
 def test_startup_log_never_contains_api_key(fake_openai, caplog, monkeypatch):

@@ -140,15 +140,24 @@ async def _run_worker():
             job = await _next_job()
             if job is None:
                 continue
-            result = await run_write(
-                mem_store.add,
-                job["content"],
+            kwargs = dict(
                 user_id=job.get("user_id") or None,
                 agent_id=job.get("agent_id", ""),
                 infer=job.get("infer", True),
                 category=job.get("category", ""),
                 tags=job.get("tags", []),
             )
+            try:
+                result = await run_write(mem_store.add, job["content"], **kwargs)
+            except Exception as e:
+                # One retry for the fresh-database catalog race (bean v4al):
+                # concurrent first writes can collide in CREATE EXTENSION
+                # (pg_type_typname_nsp_index); by the retry the type exists.
+                if "pg_type_typname" not in str(e):
+                    raise
+                logger.warning("catalog race on first write - retrying job once")
+                await asyncio.sleep(1.0)
+                result = await run_write(mem_store.add, job["content"], **kwargs)
             logger.info(
                 "Processed queue job %s: %s", job.get("job_id", "?"), _summarize(result)
             )
