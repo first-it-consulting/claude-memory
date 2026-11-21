@@ -15,13 +15,13 @@ Built on [mem0](https://github.com/mem0ai/mem0), Postgres/pgvector, FastAPI. One
 
 ### Shared team server vs local-first tools
 
-| | **claude-memory** (this project) | local-first single-user memory tools |
+| | **claude-memory** (this project) | local-first single-user tools |
 |---|---|---|
-| Where memories live | one Postgres you operate | per-machine (local file/DB) |
-| Teammates / multiple machines | one shared store, per-user workspaces | nothing shared; each machine re-learns |
-| Agent-to-agent sharing | shared space + automatic promotion of session decisions | none (scope is one user) |
-| Auth | OIDC (Keycloak) for browsers, per-user **revocable** API tokens for agents | typically none or one shared secret |
-| Multiple harnesses | MCP + REST + hooks adapters (Claude Code, Codex, Qwen Code, pi) | usually Claude-only |
+| Where memories live | one Postgres you operate | on the machine (e.g. claude-mem: local SQLite) |
+| Teammates / multiple machines | one shared store, per-user workspaces | the store is per-machine; nothing is shared |
+| Agent-to-agent sharing | shared space + automatic promotion of session decisions | out of scope (single local user) |
+| Auth | OIDC (Keycloak) for browsers, per-user **revocable** API tokens for agents | not a multi-user problem — no server to authenticate to |
+| How agents connect | one server: MCP + REST + hooks adapters (Claude Code, Codex, Qwen Code, pi) | integrations installed per agent, per machine (claude-mem supports many agents this way) |
 | Ops | multi-arch images, GitOps-ready (Flux), Prometheus metrics | n/a (runs on the laptop) |
 
 Local-first tools (e.g. [claude-mem](https://github.com/thedotmack/claude-mem)) are a good fit for one person on one machine — different trade-off, deliberately. claude-memory is the **server** shape: your agents and your team grow into one knowledge base instead of N disconnected ones. If you are one person on one laptop, either works; the moment you have a second machine, a teammate, or a CI runner that should know what the cluster's quirks are, the server shape is the one that scales.
