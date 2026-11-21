@@ -1,10 +1,30 @@
 # claude-memory
 
 [![test](https://github.com/first-it-consulting/claude-memory/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/first-it-consulting/claude-memory/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/first-it-consulting/claude-memory)](https://github.com/first-it-consulting/claude-memory/releases)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![images](https://img.shields.io/badge/ghcr-linux%2Famd64%20%C2%B7%20arm64-brightgreen)](https://ghcr.io/first-it-consulting/claude-memory)
 
-A self-hosted **memory server for AI agents** (Claude Code, Cursor, and other MCP clients). It stores facts and observations about your infrastructure, projects, and workflows so agents don't have to re-learn them on every session.
+**One memory server for all your agents — and everyone's.**
 
-Built on [mem0](https://github.com/mem0ai/mem0) with **pgvector** storage, optional async processing via **Redis**, and an LLM-powered deduplication job. Exposes both an [MCP](https://modelcontextprotocol.io) interface and a REST API.
+**The problem, in 30 seconds.** Every AI coding session starts from zero. Your agents (Claude Code, Codex, Qwen Code, Cursor, pi) re-learn the same cluster names, the same CI quirks, the same "never do this again" decisions on every machine, every day — and nothing one agent learns reaches the others.
+
+**The solution.** A self-hosted memory server your whole team's agents write to and read from: agents store facts via [MCP](https://modelcontextprotocol.io) or REST, memories are embedded (Ollama) into **Postgres + pgvector**, harness hooks give every session a briefing at start and recall relevant memories per prompt, and a nightly job deduplicates and promotes what finished sessions learned. Multi-user by design: per-user, revocable API tokens; browser login via OIDC (Keycloak); an admin-published shared space so one person's hard-won fact becomes every tenant's baseline.
+
+Built on [mem0](https://github.com/mem0ai/mem0), Postgres/pgvector, FastAPI. One container + Postgres; `docker compose up -d`.
+
+### Shared team server vs local-first tools
+
+| | **claude-memory** (this project) | local-first single-user memory tools |
+|---|---|---|
+| Where memories live | one Postgres you operate | per-machine (local file/DB) |
+| Teammates / multiple machines | one shared store, per-user workspaces | nothing shared; each machine re-learns |
+| Agent-to-agent sharing | shared space + automatic promotion of session decisions | none (scope is one user) |
+| Auth | OIDC (Keycloak) for browsers, per-user **revocable** API tokens for agents | typically none or one shared secret |
+| Multiple harnesses | MCP + REST + hooks adapters (Claude Code, Codex, Qwen Code, pi) | usually Claude-only |
+| Ops | multi-arch images, GitOps-ready (Flux), Prometheus metrics | n/a (runs on the laptop) |
+
+Local-first tools (e.g. [claude-mem](https://github.com/thedotmack/claude-mem)) are a good fit for one person on one machine — different trade-off, deliberately. claude-memory is the **server** shape: your agents and your team grow into one knowledge base instead of N disconnected ones. If you are one person on one laptop, either works; the moment you have a second machine, a teammate, or a CI runner that should know what the cluster's quirks are, the server shape is the one that scales.
 
 ---
 
@@ -220,15 +240,27 @@ Admins may add `?tenant=<id>` or `?scope=all` where marked *(admin scope)*.
 ## Quickstart (Docker Compose, ~5 minutes)
 
 Brings up postgres + server on `http://localhost:8080` using `compose.yaml`.
-Tested 2026-11-20 with Docker Compose v2 on macOS; the same steps run on Linux.
+`docker compose up -d` pulls the published multi-arch image
+(`ghcr.io/first-it-consulting/claude-memory:rolling`); use `--build` to run the
+working tree instead. Verified 2026-11-21 with Docker Compose v2 on macOS
+against the published image; the same steps run on Linux.
 
 **You need Ollama for real use.** Every write and search needs an embedding
-model, and storing memories with `infer=true` needs a chat model:
+model, and storing memories with `infer=true` (the REST default) needs a chat
+model:
 
 ```bash
 ollama pull nomic-embed-text        # embeddings (always required)
 ollama pull qwen2.5:7b              # or set OLLAMA_MODEL to any chat model
 ```
+
+Two things to know: LLM extraction needs a chat-model context window of about
+8k tokens — on a stock Ollama raise it (e.g. run the server with
+`OLLAMA_CONTEXT_LENGTH=16384`) or adds fail with "exceeds the available
+context size". And REST adds are processed **asynchronously** (queued, then
+embedded + extracted): on a CPU-only Ollama expect up to a minute before a new
+memory is searchable; the MCP `add_memory` tool stores notes as written
+(`infer=false` default) and is ready immediately.
 
 1. Configure:
 
@@ -242,8 +274,8 @@ ollama pull qwen2.5:7b              # or set OLLAMA_MODEL to any chat model
 2. Start:
 
    ```bash
-   docker compose up -d --build
-   curl -s localhost:8080/health      # {"status": "ok", ...}
+   docker compose up -d              # pulls the published image
+   curl -s localhost:8080/health      # {"status": "ok", "service": "claude-memory"}
    ```
 
 3. Mint a personal token (the admin token is bootstrap only — use personal
