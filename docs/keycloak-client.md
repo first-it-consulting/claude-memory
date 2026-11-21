@@ -1,82 +1,53 @@
-# Keycloak client runbook: claude-memory-ui
+# Keycloak client setup (OIDC login for the UI)
 
-The claude-memory UI signs users in via Keycloak OIDC (realm `my-realm` on
-`https://keycloak.example.com`). The client and its role were created
-manually in the admin console — there is no client IaC for this realm yet
-(tracked and scrapped as out of scope; this runbook is the recovery path).
-Server-side settings live in the (private) GitOps repo:
-`OIDC_ISSUER`, `OIDC_CLIENT_ID=claude-memory-ui`, `OIDC_ADMIN_ROLES=claude-memory-admin`.
+The browser login of claude-memory-ui uses a **public** OpenID Connect client
+(Authorization Code + PKCE, S256). This page documents the exact shape the
+server expects; operators are free to keep it under Terraform/OpenTofu
+management (e.g. with the `mrparkers/keycloak` provider).
 
-## Client `claude-memory-ui` (realm my-realm)
+## Client
 
 | Setting | Value |
-| --- | --- |
-| Client authentication | **Off** (public SPA client — no secret) |
-| Standard flow | On |
-| PKCE | **S256** (Proof Key for Code Exchange Code Challenge Method) |
-| Valid redirect URIs | `https://claude-memory.example.com/*` |
-| Valid post logout redirect URIs | `https://claude-memory.example.com/*` |
-| Web origins | `https://claude-memory.example.com` |
+|---|---|
+| `clientId` | `claude-memory-ui` (must equal `OIDC_CLIENT_ID` / `KEYCLOAK_CLIENT_ID`) |
+| Access type | Public (no client secret), PKCE `S256` |
+| Standard flow | enabled; direct access grants **off** |
+| Valid redirect URIs | `https://<ui-host>/*` |
+| Web origins | `https://<ui-host>` |
 
-The UI (keycloak-js) redirects to `window.location.origin + pathname`, so the
-wildcard on the app origin is what matters.
+## Audience mapper
 
-## Realm role `claude-memory-admin`
+Exactly one protocol mapper, `oidc-audience-mapper`, named
+`client-id-audience`:
 
-Assign the realm role `claude-memory-admin` to users who should see all
-workspaces. The server maps it via `OIDC_ADMIN_ROLES`; a JWT whose `realm_access.roles`
-contains it makes `whoami` return `role=admin`.
+- config key `included.custom.audience` = `claude-memory-ui` (claims: id,
+  access, introspection, userinfo)
+- **never set `included.client.audience`** - on Keycloak 26.x it injects its
+  raw string value into `aud` and suppresses the custom audience. The server
+  verifies `aud` against `OIDC_CLIENT_ID`, so the client id must land in
+  `aud` via the custom audience only.
 
-**Assign the role to the Keycloak account that is actually used to log into the
-UI** — the server resolves identity from the token's `sub` and auto-creates a
-workspace from `preferred_username` on first login (`OIDC_AUTO_CREATE`). A
-role granted to a different account has no effect. Roles are re-asserted from
-the token on *every* login (`users.upsert_oidc_user`), so granting/revoking a
-realm role takes effect on the next token refresh+request without touching the
-database.
+## Admin role
 
-Live changes on 2026-11-20: `claude-memory-admin` granted to realm users
-`my-user` (at rollout) and `admin` (browser logins use this account; it had
-auto-created an empty `user`-role workspace, which the role grant promotes to
-admin on next login). Server-side workspaces: `default` holds all pre-existing
-data (legacy bearer clients depend on it), `my-user` is the API-token identity,
-`admin` is the browser login identity. If someone later logs in with the
-Keycloak `my-user` account, `upsert_oidc_user` links its `sub` into the existing
-`my-user` row (username taken, `oidc_sub` NULL) — merging the API-token and
-browser identities into that workspace.
+A realm role (default name `claude-memory-admin`, matched by the server's
+`OIDC_ADMIN_ROLES`) grants the UI admin view. Assign it to the users that
+should administer all workspaces; users themselves are managed outside this
+project.
 
-## Audience mapper (the 26.3.3 trap)
+## Server/UI environment
 
-The server validates the access token with `audience=<client_id>`, so the
-access token's `aud` must contain `claude-memory-ui`. Add an
-**oidc-audience-mapper** to the client with ONLY this config:
+Server (claude-memory) - token verification and admin gating:
 
-```json
-{ "included.custom.audience": "claude-memory-ui", "access.token.claim": "true" }
+```
+OIDC_ISSUER=https://<keycloak>/realms/<realm>
+OIDC_CLIENT_ID=claude-memory-ui
+OIDC_ADMIN_ROLES=claude-memory-admin
 ```
 
-**Trap:** the mapper's `included.client.audience` key injects its *literal
-string value* into `aud` (it does not resolve client IDs the way you would
-expect). Setting `included.client.audience=claude-memory-ui` puts the raw text
-`"claude-memory-ui"` in as an unvalidated entry while dropping the proper
-audience, and login then loops (token rejected server-side, UI bounces to
-Keycloak again). Use `included.custom.audience` only. With the correct config
-`aud` becomes `["claude-memory-ui", "account"]`.
+UI proxy (claude-memory-ui) - enables the browser login:
 
-## Verify `aud` without touching the real client
-
-Public clients cannot be token-granted directly. Create a throwaway
-**confidential twin** client (same mappers, copy the generated secret), then:
-
-1. Password-grant a token: `POST /realms/my-realm/protocol/openid-connect/token`
-   with `client_id`/`client_secret` of the twin, `grant_type=password`, a test user.
-2. Decode the `access_token` payload (JWT) and check `aud` contains `claude-memory-ui`.
-3. Delete the twin client.
-
-Note: admin-cli password-grant tokens expire after ~1 minute — script the whole
-flow in one go. Never paste tokens into chat, logs, or beans.
-
-## Server-side reference
-
-`src/auth.py::verify_jwt` decodes with JWKS from `OIDC_ISSUER`, requiring
-`iss`, `exp`, and `audience = OIDC_AUDIENCE or OIDC_CLIENT_ID`.
+```
+KEYCLOAK_URL=https://<keycloak>
+KEYCLOAK_REALM=<realm>
+KEYCLOAK_CLIENT_ID=claude-memory-ui
+```
