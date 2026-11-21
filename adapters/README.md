@@ -18,6 +18,12 @@ The project name is the git repo name of the working directory (override with
 
 ## Install
 
+Fast path: `../scripts/setup.sh` (from a checkout) detects your harnesses and
+writes everything below automatically - including the MCP server entry for
+Claude Code / opencode - idempotently, with `--dry-run` and a `doctor` mode
+that checks server reachability, token validity (prefix only) and per-harness
+config. The manual steps remain below for reference and unusual setups.
+
 Common to all harnesses:
 
 ```bash

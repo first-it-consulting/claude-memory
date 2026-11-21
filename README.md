@@ -308,17 +308,19 @@ memory is searchable; the MCP `add_memory` tool stores notes as written
    Then `add_memory` / `search_memories` show up as tools. The MCP default is
    `infer=false` — memories are stored as written.
 
-5. Optional — lifecycle hooks (briefing at session start, per-prompt recall):
+5. Or do steps 4+5 for every installed harness in one go:
 
    ```bash
-   mkdir -p ~/.config/agent-memory
-   cp adapters/hooks/memory_hook.py ~/.config/agent-memory/
-   cp adapters/env.example ~/.config/agent-memory/env && chmod 600 ~/.config/agent-memory/env
-   # set AGENT_MEMORY_URL=http://localhost:8080 and AGENT_MEMORY_TOKEN=<personal token>
+   ./scripts/setup.sh --url http://localhost:8080 --token <your-personal-token>
+   ./scripts/setup.sh doctor    # connectivity, token, hook/MCP config checks
    ```
 
-   Then merge the hook config for your harness (`adapters/claude-code/`,
-   `qwen/`, `codex/`, or the `pi/` extension) — see
+   `setup` detects Claude Code, Qwen Code, Codex, pi and opencode, writes the
+   hook env (0600), the hook/MCP config entries (backing up files it touches,
+   once) and never prints the token; it is idempotent and supports `--dry-run`.
+   With an admin token it can create the user and store the issued token
+   directly: `--admin-token <admin> --create-user alice`. Manual per-harness
+   steps (and what the script writes) stay documented in
    [adapters/README.md](adapters/README.md).
 
 6. Optional — web UI: run the `claude-memory-ui` image (see that repo's
