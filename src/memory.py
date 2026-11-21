@@ -86,6 +86,14 @@ def _ensure_schema() -> None:
         try:
             with conn:
                 with conn.cursor() as cur:
+                    # Prime pgvector serially at startup (bean v4al): concurrent
+                    # first writes otherwise race inside CREATE EXTENSION and
+                    # Postgres aborts one with pg_type_typname_nsp_index.
+                    try:
+                        cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                    except Exception as e:  # missing privilege: ext likely there
+                        conn.rollback()
+                        logger.warning("startup CREATE EXTENSION vector skipped: %s", e)
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS tag_rules (
                             tag     TEXT NOT NULL,
