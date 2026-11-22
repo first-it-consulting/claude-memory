@@ -8,6 +8,7 @@ appear in script output.
 import hashlib
 import json
 import os
+import socket
 import subprocess
 
 import pytest
@@ -130,3 +131,55 @@ def test_doctor_dead_server(home):
     r = run(home, "http://127.0.0.1:1", "doctor", token=None)
     assert r.returncode != 0
     assert "unreachable" in r.stdout
+
+
+@pytest.fixture
+def login_proxy(tmp_path):
+    """A tiny server that answers EVERYTHING with a 302 to a login page -
+    what an oauth2-proxy in front of the app does for unauthenticated paths
+    (bean sazT: doctor must not call that reachable/healthy)."""
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def _redir(self):
+            self.send_response(302)
+            self.send_header("Location", "http://login.invalid/start")
+            self.end_headers()
+
+        do_GET = do_POST = _redir
+
+        def log_message(self, *a):
+            pass
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{port}"
+    srv.shutdown()
+
+
+def test_doctor_fails_on_login_redirect(home, login_proxy):
+    # with a token the probe chain ends at the bearer path (/mcp) - exactly
+    # the live behind-oauth2-proxy case; without one it must fail on 302
+    r = run(home, login_proxy, "doctor", token=None)
+    assert r.returncode != 0
+    out = r.stdout + r.stderr
+    assert "HTTP 302" in out  # status code named, not swallowed
+    assert "[ok]   server reachable" not in out
+    assert "<html" not in out.lower()  # no HTML dump
+    # with a token the chain ends at the bearer probe - still no false ok
+    r2 = run(home, login_proxy, "doctor")
+    out2 = r2.stdout + r2.stderr
+    assert r2.returncode != 0
+    assert "[ok]   server reachable" not in out2 and "[ok]   token valid" not in out2
+
+
+def test_setup_aborts_when_api_hidden_behind_login(home, login_proxy):
+    # token validation follows the redirect to the login page: the JSON check
+    # must reject it and abort before writing anything
+    r = run(home, login_proxy, "setup", "--harness", "claude")
+    assert r.returncode != 0
+    assert "rejected" in r.stderr
