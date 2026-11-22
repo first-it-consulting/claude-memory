@@ -62,6 +62,30 @@ api() { # api <method> <path> [json-body] [bearer-env-var] -> body on stdout
   printf "$cfg" | curl -sS -m 15 --config - -X "$method" "$CM_URL$path"
 }
 
+api_whoami() { # -> whoami JSON on stdout ("" if not the server's answer)
+  # A login proxy in front of the server 302-redirects /api/auth/whoami to
+  # SSO even with a valid bearer (only /mcp, /api/hooks, /api/sessions pass
+  # through). So: try whoami first (exact user/role output), fall back to a
+  # POST to /mcp - which every server answers with JSON at HTTP 200 and
+  # which ingress authors must keep bearer-reachable - and accept only a
+  # real JSON body. Redirects/HTML can no longer look healthy (bean sazT).
+  local out
+  out=$(api GET /api/auth/whoami "" CM_TOKEN 2>/dev/null)
+  printf '%s' "$out" | grep -q '"user_id"' && { printf '%s' "$out"; return 0; }
+  out=$(printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\ndata = "{\\"jsonrpc\\":\\"2.0\\",\\"id\\":1,\\"method\\":\\"tools/list\\"}"\n' "$CM_TOKEN" \
+      | curl -sS -m 15 --config - -X POST "$CM_URL/mcp" -H 'Accept: application/json, text/event-stream' 2>/dev/null)
+  printf '%s' "$out" | grep -q '"result"' && printf '%s' "$out"
+}
+
+http_get_status() { # -> "<code> <body>" ('000' = transport error)
+  # curl -w reports the real HTTP status; a 200-with-login-HTML or a 3xx
+  # redirect can never masquerade as health anymore (bean sazT).
+  local url="$1" out rc
+  out=$(curl -sS -m 15 -w '\n%{http_code}' "$url" 2>/dev/null); rc=$?
+  if [ $rc -ne 0 ]; then printf '000 '; return 0; fi
+  printf '%s %s' "${out##*$'\n'}" "${out%$'\n'*}"
+}
+
 install_file() { # like install -D but BSD-safe
   local src="$1" dst="$2"
   if [ "$DRY" = 1 ]; then say "dry-run: install $dst"; return; fi
@@ -82,19 +106,42 @@ doctor() {
   local rc=0
   say "claude-memory doctor - server $CM_URL"
 
-  local health
-  if health=$(curl -sS -m 10 "$CM_URL/health" 2>&1); then
-    say "  [ok]   /health reachable"
-    printf '%s' "$health" | grep -q '"status": *"ok"' || say "  [warn] server reports degraded: $health"
+  # /health is usually behind a login proxy (302 to SSO) - a redirect is NOT
+  # a healthy answer and HTML must never be dumped. Probe by HTTP status +
+  # body: /health (direct installs), then /api/version, then a bearer POST to
+  # /mcp (the path ingress authors must keep reachable for agents).
+  local res code body checked="$CM_URL/health" last_code=""
+  res=$(http_get_status "$CM_URL/health"); code=${res%% *}; body=${res#* }
+  if [ "$code" != 200 ]; then
+    last_code="$code"
+    checked="$CM_URL/api/version"
+    res=$(http_get_status "$CM_URL/api/version"); code=${res%% *}; body=${res#* }
+  fi
+  if [ "$code" != 200 ] && [ -n "$CM_TOKEN" ]; then
+    last_code="$code"
+    checked="$CM_URL/mcp"
+    body=$(api_whoami)
+    if printf '%s' "$body" | grep -q '"result"'; then code=200; else code=err; fi
+  fi
+  if [ "$code" = 000 ]; then
+    say "  [FAIL] server unreachable: $checked"; rc=1
+  elif [ "$code" = err ]; then
+    say "  [FAIL] no bearer-reachable path answered the server's JSON (last saw HTTP $last_code on $checked: login redirect or error)"; rc=1
+  elif [ "$code" != 200 ]; then
+    say "  [FAIL] $checked answered HTTP $code (login redirect or error, not the server)"; rc=1
+  elif printf '%s' "$body" | grep -qE '"status": *"ok"|"version"|"result"'; then
+    say "  [ok]   server reachable ($checked, HTTP 200)"
   else
-    say "  [FAIL] server unreachable: $health"; rc=1
+    say "  [FAIL] $checked HTTP 200 but body is not the server's JSON (login page?)"; rc=1
   fi
 
   if [ -n "$CM_TOKEN" ]; then
     local who
-    if who=$(api GET /api/auth/whoami "" CM_TOKEN 2>/dev/null) && printf '%s' "$who" | grep -q '"user_id"'; then
+    if who=$(api_whoami) && printf '%s' "$who" | grep -q '"user_id"'; then
       say "  [ok]   token valid: $(printf '%s' "$who" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("user=%s role=%s via=%s" % (d["user_id"], d["role"], d["via"]))')"
       printf '%s' "$who" | grep -q token_expiring_soon && say "  [warn] token expires in <14 days"
+    elif [ -n "$who" ]; then
+      say "  [ok]   token valid (MCP answers; whoami hidden behind login proxy)"
     else
       say "  [FAIL] token rejected ($(mask "$CM_TOKEN"))"; rc=1
     fi
@@ -242,8 +289,8 @@ setup() {
     read -rs CM_TOKEN; echo
   fi
   if [ -n "$CM_TOKEN" ] && [ "$DRY" != 1 ]; then
-    api GET /api/auth/whoami "" CM_TOKEN | grep -q '"user_id"' \
-      || { say "token $(mask "$CM_TOKEN") rejected by $CM_URL - aborting" >&2; exit 1; }
+    api_whoami | grep -qE '"user_id"|"result"' \
+      || { say "token $(mask "$CM_TOKEN") rejected by $CM_URL (or its API path is hidden behind a login proxy) - aborting" >&2; exit 1; }
     say "token accepted: $(mask "$CM_TOKEN")"
   fi
 
