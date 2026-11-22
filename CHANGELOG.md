@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.1](https://github.com/first-it-consulting/claude-memory/compare/v0.2.0...v0.2.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **setup.sh:** doctor checks HTTP status; token checks survive login proxy ([15971b9](https://github.com/first-it-consulting/claude-memory/commit/15971b94bff42ad7d968360571610faa2e49f01a))
+* **setup:** fail-closed env token guard; never probe stored token on another host ([ab400e3](https://github.com/first-it-consulting/claude-memory/commit/ab400e3aaf886ffea47901b137a6fc79f6e946fa))
+* **setup:** never clobber per-harness tokens; honest add/replace wording ([ba7ef86](https://github.com/first-it-consulting/claude-memory/commit/ba7ef86186d8e735bbfc560258b94777c9e02d5e))
+
 ## [0.2.0](https://github.com/first-it-consulting/claude-memory/compare/v0.1.1...v0.2.0) (2026-11-22)
 
 
