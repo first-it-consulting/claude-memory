@@ -344,6 +344,40 @@ def _admin_target(qs: dict, principal) -> tuple:
     return ("own",)
 
 
+def _space_param(qs: dict) -> str | None:
+    """?space=all|own|shared (bean o9y4): narrows any workspace selection to
+    exclude ('own') or contain only ('shared') shared-space rows. '' / 'all'
+    = no filter (byte-identical to pre-o9y4 behavior). None = invalid value
+    -> the caller answers 400; never silently fall back to 'all'."""
+    v = (qs.get("space", "") or "").strip().lower()
+    if v in ("", "all"):
+        return "all"
+    if v in ("own", "shared"):
+        return v
+    return None
+
+
+def _bad_space(send):
+    return _send_response(
+        send,
+        *_json_response(
+            {"ok": False, "error": "space must be one of: all, own, shared"},
+            status=400,
+        ),
+    )
+
+
+def _filter_space(rows: list[dict], space: str) -> list[dict]:
+    """Post-filter cross-workspace result sets (admin scope=all) by space.
+    Applied BEFORE the limit cut so counts and limits stay correct."""
+    if space == "all":
+        return rows
+    shared = settings.shared_tenant_id
+    if space == "own":
+        return [r for r in rows if r.get("user_id") != shared]
+    return [r for r in rows if r.get("user_id") == shared]
+
+
 def _forbidden(send):
     return _send_response(
         send,
@@ -494,22 +528,56 @@ async def _scoped_memories(qs: dict, principal, agent_id: str = "") -> list[dict
     """List memories according to the caller's scope: own workspace + shared,
     or (admins only) one named tenant or everything."""
     mode = _admin_target(qs, principal)
+    space = _space_param(qs) or "all"
+    shared = settings.shared_tenant_id
     if mode[0] == "all":
-        return await _to_thread(mem_store.get_all_across, agent_id)
+        rows = await _to_thread(mem_store.get_all_across, agent_id)
+        return _filter_space(rows, space)
     if mode[0] == "tenant":
-        return await _to_thread(mem_store.get_all, agent_id, mode[1])
-    return await _to_thread(mem_store.get_all, agent_id, principal.user_id)
+        t = mode[1]
+        if space == "shared":
+            # honest intersection: a named tenant is not the shared space
+            if t != shared:
+                return []
+            return await _to_thread(mem_store.get_all, agent_id, t)
+        return await _to_thread(mem_store.get_all, agent_id, t, space != "own")
+    if space == "shared":
+        return await _to_thread(mem_store.get_all, agent_id, shared)
+    return await _to_thread(
+        mem_store.get_all, agent_id, principal.user_id, space != "own"
+    )
 
 
 async def _scoped_search(q: str, limit: int, qs: dict, principal) -> list[dict]:
     mode = _admin_target(qs, principal)
+    space = _space_param(qs) or "all"
+    shared = settings.shared_tenant_id
     if mode[0] == "all":
+        if space == "shared":
+            return await _to_thread(mem_store.search, q, limit=limit, user_id=shared)
         tenants = await _to_thread(users_store.list_tenant_ids)
-        return await _to_thread(mem_store.search_across, q, limit, tenants)
+        rows = await _to_thread(mem_store.search_across, q, limit, tenants)
+        return _filter_space(rows, space)
     tenant = mode[1] if mode[0] == "tenant" else principal.user_id
+    if space == "shared" and mode[0] == "tenant" and tenant != shared:
+        # honest intersection: an explicitly named tenant is not the shared
+        # space. (own-mode callers just query the shared space directly.)
+        return []
     if qs.get("hybrid", "").strip() in ("1", "true", "yes"):
-        return await _to_thread(mem_store.search_hybrid, q, limit=limit, user_id=tenant)
-    return await _to_thread(mem_store.search, q, limit=limit, user_id=tenant)
+        return await _to_thread(
+            mem_store.search_hybrid,
+            q,
+            limit=limit,
+            user_id=tenant if space != "shared" else shared,
+            include_shared=space != "own",
+        )
+    return await _to_thread(
+        mem_store.search,
+        q,
+        limit=limit,
+        user_id=tenant if space != "shared" else shared,
+        include_shared=space != "own",
+    )
 
 
 async def _users_api(path: str, method: str, send, receive, qs: dict) -> bool:
@@ -1525,6 +1593,9 @@ async def app(scope, receive, send):
 
         # GET /api/stats  (admin: ?scope=all|?tenant=)
         if path == "/api/stats" and method == "GET":
+            if _space_param(qs) is None:
+                await _bad_space(send)
+                return
             all_memories = await _scoped_memories(qs, principal)
             total = len(all_memories)
             dates = [
@@ -1648,6 +1719,9 @@ async def app(scope, receive, send):
         # GET /api/memories/export — download memories as JSON
         # (own workspace + shared; admins may pass ?scope=all or ?tenant=)
         if path == "/api/memories/export" and method == "GET":
+            if _space_param(qs) is None:
+                await _bad_space(send)
+                return
             all_memories = await _scoped_memories(qs, principal)
             body = json.dumps(
                 [_memory_dict(r) for r in all_memories], default=str, indent=2
@@ -1711,6 +1785,9 @@ async def app(scope, receive, send):
         # GET /api/memories — list / search (?ids=a,b fetches visible records
         # by id; ?format=index returns token-cheap rows for the two-step search)
         if path == "/api/memories" and method == "GET":
+            if _space_param(qs) is None:
+                await _bad_space(send)
+                return
             ids_param = qs.get("ids", "").strip()
             if ids_param:
                 recs = await _to_thread(

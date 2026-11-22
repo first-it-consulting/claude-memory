@@ -230,6 +230,11 @@ Standard Model Context Protocol (stateless HTTP, SSE or JSON transport). Tools: 
 
 ### REST (`/api/*` — requires bearer auth; every route is tenant-scoped)
 Admins may add `?tenant=<id>` or `?scope=all` where marked *(admin scope)*.
+All users may add `?space=own|shared` to memories/stats/export *(bean o9y4)*
+to narrow any workspace view: `own` excludes shared-space rows, `shared`
+keeps only them; omitted (or `all`) is the default union "own + shared".
+The two selectors compose — `?tenant=alice&space=own` is "alice's own,
+without shared", and an invalid `space` value answers 400.
 
 | Method | Path | Description |
 |---|---|---|
