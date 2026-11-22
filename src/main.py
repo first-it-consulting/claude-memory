@@ -55,6 +55,7 @@ async def add_memory(
     infer: bool = False,
     category: str = "",
     tags: list[str] = [],
+    shared: bool = False,
 ) -> str:
     """Store a fact or observation in long-term memory (shared by all agents).
     Write it as one or more condensed, self-contained statements — it is stored
@@ -62,15 +63,22 @@ async def add_memory(
     category: project|feedback|reference|user|session|incident
     tags: free-form list, e.g. ["prod-k8s", "remnant", "cnpg"] — use app names, cluster names, topics.
     infer=True lets the server's small LLM rephrase/split the note first (slow; it
-    can distort technical details — only for long, chatty input)."""
+    can distort technical details — only for long, chatty input).
+    shared=True stores straight into the shared space visible to every tenant —
+    admin tokens only; anything else is rejected and nothing is stored."""
     if category and category not in mem_store.VALID_CATEGORIES:
         return f"Invalid category '{category}'. Valid: {', '.join(sorted(mem_store.VALID_CATEGORIES - {''}))}"
+    principal = auth.get_principal()
+    if shared and not principal.is_admin:
+        return "shared=true requires an admin token - nothing was stored. Omit it to store in your own workspace."
     g = mem_store.embedding_guard()
     if not g["ok"]:
         return f"writes disabled: {g['msg']}"
     # Always queue: an inferred add takes tens of seconds on CPU Ollama and the
     # caller doesn't need the extraction result. The tenant travels with the
-    # job so the async write lands in the caller's workspace.
+    # job so the async write lands in the caller's workspace (or the shared
+    # space for admin shared adds, bean vd3y).
+    target = settings.shared_tenant_id if shared else principal.user_id
     try:
         job_id = await enqueue(
             content,
@@ -78,11 +86,11 @@ async def add_memory(
             infer,
             category,
             tags,
-            user_id=auth.get_principal().user_id,
+            user_id=target,
         )
     except QueueFull as e:
         return f"Memory server busy, not stored: {e}. Retry later."
-    return json.dumps({"queued": True, "job_id": job_id})
+    return json.dumps({"queued": True, "job_id": job_id, "shared": shared})
 
 
 @mcp.tool()
@@ -1848,6 +1856,45 @@ async def app(scope, receive, send):
                 if content:
                     await run_write(mem_store.update, memory_id, content)
                 await _send_response(send, *_json_response({"ok": True}))
+                return
+
+            # PATCH /api/memories/{id}/share — admin-only MOVE into the
+            # shared space (bean vd3y): id/created_at/embeddings are kept,
+            # provenance (shared_by/shared_at/original_tenant) lands in the
+            # payload. Auth is checked before any existence lookup, and
+            # non-admins get the same 404 shape as for any id they cannot
+            # see — no existence leak either way.
+            if method == "PATCH" and memory_id.endswith("/share"):
+                if not principal.is_admin:
+                    await _forbidden(send)
+                    return
+                real_id = memory_id[: -len("/share")]
+                res = await run_write(
+                    mem_store.share_to_space, real_id, principal.user_id
+                )
+                if res == "not_found":
+                    await _send_response(
+                        send, 404, [[b"content-type", b"text/plain"]], b"Not Found"
+                    )
+                    return
+                if res == "error":
+                    await _send_response(
+                        send,
+                        *_json_response(
+                            {"ok": False, "error": "store unreachable"}, status=503
+                        ),
+                    )
+                    return
+                await _send_response(
+                    send,
+                    *_json_response(
+                        {
+                            "ok": True,
+                            "shared": res == "moved",
+                            "already_shared": res == "already",
+                        }
+                    ),
+                )
                 return
 
             # PATCH /api/memories/{id}/tags — update tags only

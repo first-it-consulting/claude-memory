@@ -3,6 +3,8 @@ import logging
 import pathlib
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
 
 import psycopg2
 import psycopg2.extras
@@ -753,6 +755,58 @@ def update(memory_id: str, content: str) -> dict:
 def delete(memory_id: str) -> dict:
     m = get_memory()
     return m.delete(memory_id)
+
+
+def share_to_space(memory_id: str, actor: str) -> str:
+    """Move one memory into the shared space, keeping its id (bean vd3y).
+
+    Returns: 'moved' | 'already' | 'not_found' | 'error'.
+    Provenance goes into the payload as top-level keys (same style as
+    category/tags — mem0 copies unknown top-level keys into its result
+    dicts): shared_by + shared_at + original_tenant (the owner at move
+    time), so the move stays attributable and an undo could be built
+    later from the row alone. The vector and payload live in the same
+    mem0 row — one UPDATE keeps search, keyword hits, timeline and list
+    consistent by construction. Idempotent: a second call is a no-op.
+    A malformed id (not a UUID) returns 'not_found' without touching the
+    DB: the mem0 vector table has a UUID column and Postgres would raise.
+    """
+    try:
+        uuid.UUID(str(memory_id))
+    except (ValueError, AttributeError, TypeError):
+        return "not_found"
+    try:
+        conn = _db_conn()
+    except Exception:
+        return "error"
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("SELECT payload FROM mem0 WHERE id = %s", (memory_id,))
+            row = cur.fetchone()
+            if not row:
+                return "not_found"
+            payload = dict(row[0] or {})
+            if payload.get("user_id") == settings.shared_tenant_id:
+                return "already"
+            prov = {
+                "shared_by": actor,
+                "shared_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "original_tenant": payload.get("user_id") or "",
+            }
+            payload.update(prov)
+            payload["user_id"] = settings.shared_tenant_id
+            meta = payload.get("metadata")
+            if isinstance(meta, dict):
+                meta.update(prov)
+            cur.execute(
+                "UPDATE mem0 SET payload = %s WHERE id = %s",
+                (json.dumps(payload), memory_id),
+            )
+        return "moved"
+    except Exception:
+        return "error"
+    finally:
+        conn.close()
 
 
 def update_tags(
