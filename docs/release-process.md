@@ -30,3 +30,23 @@ gh pr merge <release-pr> --admin --squash
 (The 0.2.1 release, 2026-11-22, behaved exactly like this: `--admin` alone
 failed, `--admin --squash` merged; the tag and GitHub release appeared a
 minute later and the publish workflow dispatched itself.)
+
+## The release PR itself has no PR gate
+
+Release-please PRs run no PR gate or show a failed run without jobs: every
+push to the rolling release branch makes the PR-triggered workflows
+(test/security/publish) fail on GitHub's side - "This run likely failed
+because of a workflow file issue", zero jobs, no logs, not rerunnable - or
+sit in `action_required` waiting for an approval that never resolves. The
+workflows themselves are fine (identical, valid YAML on `main`; every
+human-authored PR head gates green). PR events read workflow files from the
+PR head, and release-please's own branch commits (created under its app
+token) trip the approval/config rail that only applies when the workflow is
+not coming from `main` (bean clpj, 2026-11-22; both repos affected).
+
+Consequences, and why we keep it: the merge already ignores these checks
+(`--admin --squash`, "no checks reported"), and **the tag publish
+(workflow_dispatch on `v*`) is the real gate** - it builds on the release
+commit and was green for every release so far. A red X on the release PR is
+expected noise; do not chase it, and do not treat it as a reason to skip the
+tag-publish verification (digest compare against ghcr before mirroring).
