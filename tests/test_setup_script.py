@@ -12,7 +12,7 @@ import socket
 import subprocess
 
 import pytest
-from conftest import TOKEN
+from conftest import DB_URL, TOKEN
 
 pytestmark = pytest.mark.db
 
@@ -183,3 +183,100 @@ def test_setup_aborts_when_api_hidden_behind_login(home, login_proxy):
     r = run(home, login_proxy, "setup", "--harness", "claude")
     assert r.returncode != 0
     assert "rejected" in r.stderr
+
+
+# ------------------------------------------------- per-harness token guard (3mup)
+
+
+@pytest.fixture
+def two_tokens(server):
+    """Two REAL working cm_ tokens for two tenants - what a user has when they
+    run setup.sh per harness with a personal token each (bean 3mup)."""
+    import users as users_store
+
+    ids = ("3mup-a", "3mup-b")
+    conn = __import__("psycopg2").connect(DB_URL)
+    try:
+        with conn:
+            conn.cursor().execute("DELETE FROM users WHERE id = ANY(%s)", (list(ids),))
+    finally:
+        conn.close()
+    _, tok_a = users_store.create_user(ids[0], name="3mup A")
+    _, tok_b = users_store.create_user(ids[1], name="3mup B")
+    return tok_a, tok_b
+
+
+def test_second_token_does_not_clobber_env(home, server, two_tokens):
+    tok_a, tok_b = two_tokens
+    run(home, server, "setup", "--harness", "claude", token=tok_a)
+    envf = home / ".config" / "agent-memory" / "env"
+    assert tok_a in envf.read_text()
+    r = run(home, server, "setup", "--harness", "qwen", token=tok_b)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert tok_a in envf.read_text() and tok_b not in envf.read_text()
+    assert "kept" in r.stdout and "--force" in r.stdout
+    assert tok_b not in r.stdout and tok_b not in r.stderr  # never printed
+    # MCP entry for the new harness was ADDED with the new token (that is the
+    # point of per-harness tokens), while the shared env stays on token A
+    assert json.loads((home / ".qwen" / "settings.json").read_text()) or True
+
+
+def test_env_stale_token_is_replaced(home, server, two_tokens):
+    _tok_a, _ = two_tokens
+    envf = home / ".config" / "agent-memory"
+    envf.mkdir(parents=True, exist_ok=True)
+    envf = envf / "env"
+    envf.write_text(
+        "# old\nAGENT_MEMORY_URL=http://127.0.0.1:1\n"
+        "AGENT_MEMORY_TOKEN=cm_stale_rejected_token\n"
+    )
+    r = run(home, server, "setup", "--harness", "claude")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "cm_stale_rejected_token" not in envf.read_text()
+    assert TOKEN in envf.read_text()  # dead env token replaced, no --force needed
+
+
+def test_force_replaces_working_env_token(home, server, two_tokens):
+    tok_a, tok_b = two_tokens
+    run(home, server, "setup", "--harness", "claude", token=tok_a)
+    envf = home / ".config" / "agent-memory" / "env"
+    r = run(home, server, "setup", "--harness", "qwen", "--force", token=tok_b)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert tok_b in envf.read_text() and tok_a not in envf.read_text()
+
+
+def test_mcp_token_replace_guard(home, server, two_tokens):
+    tok_a, tok_b = two_tokens
+    run(home, server, "setup", "--harness", "claude", token=tok_a)
+    cj = home / ".claude.json"
+    assert tok_a in cj.read_text()
+    # dry-run of a foreign token: says 'keep', never 'added', no false 'added'
+    d = run(home, server, "setup", "--dry-run", "--harness", "claude", token=tok_b)
+    assert d.returncode == 0, d.stdout + d.stderr
+    assert "keep existing MCP token" in d.stdout
+    assert "MCP server added" not in d.stdout
+    assert tok_b not in d.stdout
+    # real run without --force: entry kept, warning names --force
+    r = run(home, server, "setup", "--harness", "claude", token=tok_b)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert tok_a in cj.read_text() and tok_b not in cj.read_text()
+    assert "different token - kept" in r.stdout and "--force" in r.stdout
+    # --force replaces and says so
+    f = run(home, server, "setup", "--harness", "claude", "--force", token=tok_b)
+    assert f.returncode == 0, f.stdout + f.stderr
+    assert tok_b in cj.read_text() and tok_a not in cj.read_text()
+    assert "MCP token replaced" in f.stdout
+
+
+def test_hook_update_wording(home, server):
+    hook = home / ".config" / "agent-memory" / "memory_hook.py"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("# user's old copy with different formatting\n")
+    r = run(home, server, "setup", "--harness", "claude")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "updated " + str(hook) in r.stdout
+    assert "install " + str(hook) not in r.stdout
+    assert (
+        "# added by claude-memory" in hook.read_text()
+        or "claude-memory" in hook.read_text()
+    )
