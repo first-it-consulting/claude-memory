@@ -148,7 +148,7 @@ spec:
     spec:
       containers:
         - name: ui
-          image: ghcr.io/first-it-consulting/claude-memory-ui:latest
+          image: ghcr.io/first-it-consulting/claude-memory-ui:v0.1.2
           ports: [{ containerPort: 8081 }]
           env:
             - name: MCP_INTERNAL_URL
