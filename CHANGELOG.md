@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.2](https://github.com/first-it-consulting/claude-memory/compare/v0.1.1...v0.1.2) (2026-11-22)
+
+
+### Features
+
+* exact-identifier keyword path with hybrid RRF ranking ([388eb2c](https://github.com/first-it-consulting/claude-memory/commit/388eb2c5ba96b54c44dddb071cd0c97608715e1d))
+* **hooks:** token-budgeted compact-index SessionStart briefing ([cd55039](https://github.com/first-it-consulting/claude-memory/commit/cd5503934f5bf43b7fe9449a28c4d585705d62f8))
+* OpenAI-compatible embedder/LLM providers with bearer auth ([cd326b7](https://github.com/first-it-consulting/claude-memory/commit/cd326b762a47ba8a10c9eda62ca5fe8e0de63a42))
+* setup and doctor script for harness configs ([a24725a](https://github.com/first-it-consulting/claude-memory/commit/a24725abcdcc47d4a8d5591cf576c62bb5950a24))
+* token-efficient search - index mode, fetch-by-ids, timeline ([34f7287](https://github.com/first-it-consulting/claude-memory/commit/34f7287f917ad16af58c5ce11b2e5e528691a407))
+
+
+### Bug Fixes
+
+* **ci:** pass -R to gh workflow run in publish trigger ([0966d63](https://github.com/first-it-consulting/claude-memory/commit/0966d63b3a2e0d5f38886abd8c2931116d0b929a))
+* first-write pgvector catalog race drops queue jobs ([e018baf](https://github.com/first-it-consulting/claude-memory/commit/e018baffd436a887eeaf61e71d770daa4ddd5b29))
+* **stats:** report distinct tagged memories in /api/stats ([a3227a0](https://github.com/first-it-consulting/claude-memory/commit/a3227a013966b089535c8e61df9ea944db325923))
+
 ## [0.1.1](https://github.com/first-it-consulting/claude-memory/compare/v0.1.0...v0.1.1) (2026-11-21)
 
 
