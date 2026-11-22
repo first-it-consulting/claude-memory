@@ -222,18 +222,36 @@ def test_second_token_does_not_clobber_env(home, server, two_tokens):
 
 
 def test_env_stale_token_is_replaced(home, server, two_tokens):
+    # an EXPLICIT rejection (401 from the same server the env points at)
+    # still replaces without --force; fail-closed only covers ambiguous answers
     _tok_a, _ = two_tokens
     envf = home / ".config" / "agent-memory"
     envf.mkdir(parents=True, exist_ok=True)
     envf = envf / "env"
     envf.write_text(
-        "# old\nAGENT_MEMORY_URL=http://127.0.0.1:1\n"
+        f"# old\nAGENT_MEMORY_URL={server}\n"
         "AGENT_MEMORY_TOKEN=cm_stale_rejected_token\n"
     )
     r = run(home, server, "setup", "--harness", "claude")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "cm_stale_rejected_token" not in envf.read_text()
     assert TOKEN in envf.read_text()  # dead env token replaced, no --force needed
+
+
+def test_env_other_host_token_is_kept_not_probed(home, server, two_tokens):
+    # env points at a DEAD other host: probing its token there would either
+    # leak (if up) or be ambiguous (it is down) -> keep, never write, no
+    # --force needed; the security fix removed the old blind-replace.
+    tok_a, _ = two_tokens
+    envd = home / ".config" / "agent-memory"
+    envd.mkdir(parents=True, exist_ok=True)
+    (envd / "env").write_text(
+        f"AGENT_MEMORY_URL=http://127.0.0.1:1\nAGENT_MEMORY_TOKEN={tok_a}\n"
+    )
+    r = run(home, server, "setup", "--harness", "claude")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert tok_a in (envd / "env").read_text()
+    assert "different server" in r.stdout and "--force" in r.stdout
 
 
 def test_force_replaces_working_env_token(home, server, two_tokens):
@@ -280,3 +298,129 @@ def test_hook_update_wording(home, server):
         "# added by claude-memory" in hook.read_text()
         or "claude-memory" in hook.read_text()
     )
+
+
+# ---------------------------------------- fail-closed token probe (security review)
+
+
+@pytest.fixture
+def recorder(tmp_path):
+    """HTTP server that accepts a given 'good' token (whoami + MCP JSON) and
+    records every Authorization header it ever saw - used to prove the env
+    guard NEVER sends the stored token to another host."""
+    import http.server
+    import threading
+
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def _ans(self):
+            auth = self.headers.get("Authorization", "")
+            seen.append(auth)
+            ok = self.path.startswith("/api/auth/whoami") or self.path == "/mcp"
+            body = (
+                b'{"user_id":"x","via":"token","role":"user"}'
+                if self.path.startswith("/api/auth/whoami")
+                else b'{"result":[]}'
+            )
+            if ok and auth.endswith(GOOD[0]):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"error":"nope"}')
+
+        do_GET = do_POST = _ans
+
+        def log_message(self, *a):
+            pass
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{port}", seen
+    srv.shutdown()
+
+
+GOOD = ["unset"]
+
+
+def test_env_token_never_probed_against_other_host(home, server, two_tokens, recorder):
+    tok_a, tok_b = two_tokens
+    rec_url, seen = recorder
+    GOOD[0] = tok_b
+    envd = home / ".config" / "agent-memory"
+    envd.mkdir(parents=True, exist_ok=True)
+    # env points at the REAL test server and holds its working token tok_a
+    (envd / "env").write_text(
+        f"AGENT_MEMORY_URL={server}\nAGENT_MEMORY_TOKEN={tok_a}\n"
+    )
+    # run setup against ANOTHER host (the recorder) with tok_b
+    r = run(home, rec_url, "setup", "--harness", "claude", token=tok_b)
+    assert r.returncode == 0, r.stdout + r.stderr
+    env_txt = (envd / "env").read_text()
+    assert tok_a in env_txt  # kept, not clobbered
+    assert "different server" in r.stdout and "--force" in r.stdout
+    # the decisive part: tok_a was never sent to the other host
+    assert not any(tok_a in h for h in seen), "env token leaked to foreign URL"
+    # and the new token was validated there normally (recorder saw it)
+    assert any(tok_b in h for h in seen)
+
+
+def test_env_keep_is_fail_closed_on_ambiguous_answer(home, two_tokens):
+    # env URL == CM_URL (the login proxy); setup aborts on its OWN token
+    # check first, so the env file must survive untouched either way -
+    # fail-closed twice over.
+    tok_a, tok_b = two_tokens
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def _r(self):
+            self.send_response(302)
+            self.send_header("Location", "http://login.invalid/sso")
+            self.end_headers()
+
+        do_GET = do_POST = _r
+
+        def log_message(self, *a):
+            pass
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{port}"
+    try:
+        envd = home / ".config" / "agent-memory"
+        envd.mkdir(parents=True, exist_ok=True)
+        (envd / "env").write_text(
+            f"AGENT_MEMORY_URL={url}\nAGENT_MEMORY_TOKEN={tok_a}\n"
+        )
+        r = run(home, url, "setup", "--harness", "claude", token=tok_b)
+        assert r.returncode != 0
+        assert tok_a in (envd / "env").read_text()
+    finally:
+        srv.shutdown()
+
+
+def test_env_rejected_token_still_replaced(home, server, two_tokens):
+    # explicit 401 from the SAME server keeps the replace path alive (no
+    # fail-closed regression): stale token in env -> replaced without --force
+    _, tok_b = two_tokens
+    envd = home / ".config" / "agent-memory"
+    envd.mkdir(parents=True, exist_ok=True)
+    (envd / "env").write_text(
+        f"AGENT_MEMORY_URL={server}\nAGENT_MEMORY_TOKEN=cm_dead_token_401\n"
+    )
+    r = run(home, server, "setup", "--harness", "claude", token=tok_b)
+    assert r.returncode == 0, r.stdout + r.stderr
+    env_txt = (envd / "env").read_text()
+    assert "cm_dead_token_401" not in env_txt and tok_b in env_txt
