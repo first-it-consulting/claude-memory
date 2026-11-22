@@ -656,6 +656,10 @@ def keyword_hits(
                         "updated_at": p.get("updated_at"),
                         "user_id": p.get("user_id"),
                         "agent_id": p.get("agent_id"),
+                        # proposal state for list chips (bean oi38): top-level
+                        # payload keys, same shape mem0 produces
+                        "share_status": p.get("share_status"),
+                        "rejected_reason": p.get("rejected_reason"),
                         "metadata": {
                             k: p[k]
                             for k in ("category", "tags", "role")

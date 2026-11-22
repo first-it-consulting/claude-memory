@@ -299,6 +299,38 @@ def test_rate_limit_20_open(server, users, mem):
     # mem deleted here too; the mem fixture's cleanup is a no-op then
 
 
+def test_search_rows_carry_share_status(server, fake_mem, users, mem):
+    # The list/semantic paths read mem0 (faked in tests), so real-DB proposal
+    # fields ride the keyword path: the UI chips read them off rows whose
+    # payload was just UPDATEd by the proposal endpoints themselves.
+    p = _payload(mem)
+    p["data"] = "fact worth proposing chip marker"
+    p["text_lemmatized"] = "fact worth proposing chip marker"
+    conn = __import__("psycopg2").connect(DB_URL)
+    with conn:
+        conn.cursor().execute(
+            "UPDATE mem0 SET payload = %s WHERE id = %s", (json.dumps(p), mem)
+        )
+    req(server, "POST", f"/api/memories/{mem}/propose-share", token=users["prop"])
+    rows = req(
+        server, "GET", "/api/memories?q=chip&hybrid=1", token=users["prop"]
+    ).json()
+    hit = next(x for x in rows if x["id"] == mem)
+    assert hit["share_status"] == "proposed"
+    req(
+        server,
+        "POST",
+        f"/api/share-proposals/{mem}/reject",
+        token=users["adm"],
+        json={"reason": "not useful"},
+    )
+    rows = req(
+        server, "GET", "/api/memories?q=chip&hybrid=1", token=users["prop"]
+    ).json()
+    hit = next(x for x in rows if x["id"] == mem)
+    assert (hit["share_status"], hit["rejected_reason"]) == ("rejected", "not useful")
+
+
 def test_approve_unknown_and_malformed_id_never_500(server, users):
     _ensure_table()  # CI without pgvector has no mem0 table -> 503, skip
     r = req(
