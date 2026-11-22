@@ -9,7 +9,7 @@
 
 **The problem, in 30 seconds.** Every AI coding session starts from zero. Your agents (Claude Code, Codex, Qwen Code, Cursor, pi) re-learn the same cluster names, the same CI quirks, the same "never do this again" decisions on every machine, every day — and nothing one agent learns reaches the others.
 
-**The solution.** A self-hosted memory server your whole team's agents write to and read from: agents store facts via [MCP](https://modelcontextprotocol.io) or REST, memories are embedded (Ollama) into **Postgres + pgvector**, harness hooks give every session a briefing at start and recall relevant memories per prompt, and a nightly job deduplicates and promotes what finished sessions learned. Multi-user by design: per-user, revocable API tokens; browser login via OIDC (Keycloak); an admin-published shared space so one person's hard-won fact becomes every tenant's baseline.
+**The solution.** A self-hosted memory server your whole team's agents write to and read from: agents store facts via [MCP](https://modelcontextprotocol.io) or REST, memories are embedded (Ollama) into **Postgres + pgvector**, harness hooks give every session a briefing at start and recall relevant memories per prompt, and a nightly job deduplicates and promotes what finished sessions learned. Multi-user by design: per-user, revocable API tokens; browser login via OIDC; an admin-published shared space so one person's hard-won fact becomes every tenant's baseline.
 
 Built on [mem0](https://github.com/mem0ai/mem0), Postgres/pgvector, FastAPI. One container + Postgres; `docker compose up -d`.
 
@@ -20,7 +20,7 @@ Built on [mem0](https://github.com/mem0ai/mem0), Postgres/pgvector, FastAPI. One
 | Where memories live | one Postgres you operate | on the machine (e.g. claude-mem: local SQLite) |
 | Teammates / multiple machines | one shared store, per-user workspaces | the store is per-machine; nothing is shared |
 | Agent-to-agent sharing | shared space + automatic promotion of session decisions | out of scope (single local user) |
-| Auth | OIDC (Keycloak) for browsers, per-user **revocable** API tokens for agents | not a multi-user problem — no server to authenticate to |
+| Auth | OIDC for browsers (any issuer with JWKS; bundled UI: Keycloak), per-user **revocable** API tokens for agents | not a multi-user problem — no server to authenticate to |
 | How agents connect | one server: MCP + REST + hooks adapters (Claude Code, Codex, Qwen Code, pi) | integrations installed per agent, per machine (claude-mem supports many agents this way) |
 | Ops | multi-arch images, GitOps-ready (Flux), Prometheus metrics | n/a (runs on the laptop) |
 
@@ -41,7 +41,8 @@ Local-first tools (e.g. [claude-mem](https://github.com/thedotmack/claude-mem)) 
 - **REST API** — full CRUD over `/api/*` with bearer-token auth, plus JSON export/import.
 - **Multi-tenancy** — every user gets their own workspace (memories + session
   checkpoints). Agents authenticate with per-user API tokens, the browser with
-  a Keycloak login; admins see across all workspaces and can publish facts into
+  an OIDC login (any issuer; the bundled UI is Keycloak-only); admins see
+  across all workspaces and can publish facts into
   a shared space that every tenant reads. See [Multi-tenancy](#multi-tenancy).
 - **Async queue (optional)** — set `REDIS_URL` to route writes through a Redis job queue (`remnant:queue:add_memory`) with a background worker, so heavy inference never blocks the request.
 - **Prometheus metrics** — `/metrics` exposes memory counts by category, agent and tag, plus queue depth.
@@ -132,12 +133,12 @@ All settings come from environment variables (`.env` file is auto-loaded). See `
 | `REDIS_URL` | *(empty)* | Set to enable the async write queue (requires a reachable Redis). |
 | `ADMIN_TOKEN` | *(empty)* | Bootstrap admin API token (role admin, tenant `default`). Keep it set — it is the recovery path if the users table or Keycloak is unreachable. |
 | `SHARED_TENANT_ID` | `global` | Pseudo-tenant whose memories every workspace can read (admin-published). |
-| `OIDC_ISSUER` | *(empty)* | Keycloak issuer URL; enables browser (JWT) auth when set. |
+| `OIDC_ISSUER` | *(empty)* | OIDC issuer URL (any provider publishing `/.well-known/openid-configuration`; tested against Keycloak); enables browser (JWT) auth when set. |
 | `OIDC_CLIENT_ID` | `claude-memory-ui` | Expected token audience. |
 | `OIDC_AUDIENCE` | *(empty)* | Override the expected audience if it differs from the client id. |
 | `OIDC_ADMIN_ROLES` | `claude-memory-admin` | Comma-separated realm/client roles that grant the admin role. |
 | `OIDC_ADMIN_USERNAMES` | *(empty)* | Comma-separated `preferred_username` fallback for admins. |
-| `OIDC_AUTO_CREATE` | `true` | First Keycloak login auto-creates a `role=user` account. |
+| `OIDC_AUTO_CREATE` | `true` | First OIDC login auto-creates a `role=user` account. |
 
 The `X-Agent-ID` request header overrides the agent id for a given call.
 
@@ -155,7 +156,7 @@ this was introduced: everything that existed before lives in tenant `default`.
 |---|---|---|
 | `ADMIN_TOKEN` | operators, recovery | `default` / **admin** |
 | `cm_…` API token | agents (MCP, REST, hooks) | its user / its role |
-| Keycloak JWT | browser (UI login) | mapped by `sub`, role from realm roles |
+| OIDC JWT | browser (UI login; any JWKS issuer, bundled UI Keycloak) | mapped by `sub`, role from realm/client roles |
 | `BEARER_TOKEN` (legacy) | shared token of pre-token setups; shown as `legacy-hooks` (user `default`), revocable | `default` / user |
 
 **Per-user API tokens** (`cm_<id>_<secret>`, `src/tokens.py`) are self-service:
@@ -174,11 +175,13 @@ Migrating a device from the shared token: see
 (a personal token reads **its** tenant, not `default`): see
 [docs/retenant-design.md](docs/retenant-design.md).
 
-Keycloak access tokens are verified
-against the realm's JWKS (signature, `iss`, `aud`, `exp`); the first login
-provisions `users` by `preferred_username`, and realm role
-`claude-memory-admin` (or `OIDC_ADMIN_USERNAMES`) grants the admin role on
-every login.
+Browser JWTs are verified
+against the issuer's JWKS (signature, `iss`, `aud`, `exp`) — any OIDC
+provider with standard discovery works; the admin mapping reads
+Keycloak-style `realm_access`/`resource_access` claims (or
+`OIDC_ADMIN_USERNAMES`), so non-Keycloak issuers should use the username
+list. The first login provisions `users` by `preferred_username`, and realm
+role `claude-memory-admin` grants the admin role on every login.
 
 **Isolation rules:**
 
