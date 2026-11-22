@@ -90,6 +90,28 @@ http_get_status() { # -> "<code> <body>" ('000' = transport error)
   printf '%s %s' "${out##*$'\n'}" "${out%$'\n'*}"
 }
 
+url_origin() { # scheme://host[:port] of an http(s) URL, lowercased ('' if none)
+  printf '%s' "$1" | sed -E 's#^[[:space:]]*##; s#^(https?://[^/?#]+).*#\1#' | tr '[:upper:]' '[:lower:]' | grep -E '^https?://' || true
+}
+
+tok_probe() { # tok_probe <token> -> ok|reject|unverified; never prints the token
+  # ok: whoami/MCP answered the server's JSON with this bearer.
+  # reject: the MCP endpoint explicitly refused it (401/403).
+  # unverified: transport error or any other answer (login proxy, 5xx) - the
+  # caller must treat this as 'do not overwrite' (fail-closed, security review).
+  local t="$1" out code
+  out=$(CM_TOKEN="$t" api_whoami 2>/dev/null)
+  printf '%s' "$out" | grep -qE '"user_id"|"result"' && { printf ok; return; }
+  code=$(printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\ndata = "{\\"jsonrpc\\":\\"2.0\\",\\"id\\":1,\\"method\\":\\"tools/list\\"}"\n' "$t" \
+    | curl -sS -m 15 --config - -o /dev/null -w '%{http_code}' -X POST "$CM_URL/mcp" \
+        -H 'Accept: application/json, text/event-stream' 2>/dev/null) || code=000
+  case "$code" in
+    401|403) printf reject ;;
+    2*) printf ok ;;
+    *) printf unverified ;;
+  esac
+}
+
 install_file() { # like install -D but BSD-safe; 'updated' when content differs
   local src="$1" dst="$2" verb=install
   [ -f "$dst" ] && verb=updated
@@ -324,22 +346,34 @@ setup() {
 
   # shared hook payload + env file (all harnesses read this)
   install_file "$REPO_DIR/adapters/hooks/memory_hook.py" "$HOME/.config/agent-memory/memory_hook.py"
-  local envf="$HOME/.config/agent-memory/env" env_tok="" env_keep=0
-  # Bean 3mup: per-harness runs pass different tokens. Never clobber an env
-  # that already holds a WORKING different token unless --force; a stale
-  # (rejected) env token is replaced as before.
+  local envf="$HOME/.config/agent-memory/env" env_tok="" env_url="" keep_reason=""
+  # Bean 3mup + security review: per-harness runs pass different tokens, so a
+  # foreign token in env is only ever REPLACED when the server that the env
+  # file itself points at explicitly rejected it. Never send the stored token
+  # to another host (env URL must match this run's URL), and on transport
+  # errors or ambiguous answers keep the file + warn instead of overwriting
+  # blindly (fail-closed). --force overrides everything.
   if [ -f "$envf" ]; then
     env_tok=$(grep '^AGENT_MEMORY_TOKEN=' "$envf" | tail -1 | cut -d= -f2- || true)
+    env_url=$(grep '^AGENT_MEMORY_URL=' "$envf" | tail -1 | cut -d= -f2- || true)
     if [ -n "$env_tok" ] && [ "$env_tok" != "$CM_TOKEN" ] && [ "$FORCE" != 1 ]; then
-      if [ "$DRY" = 1 ]; then env_keep=1
-      elif CM_TOKEN="$env_tok" api_whoami | grep -qE '"user_id"|"result"'; then env_keep=1; fi
+      if [ "$DRY" = 1 ]; then keep_reason=dry
+      elif [ "$(url_origin "$env_url")" != "$(url_origin "$CM_URL")" ]; then keep_reason=other
+      else
+        case "$(tok_probe "$env_tok")" in
+          ok) keep_reason=works ;;
+          reject) keep_reason="" ;;
+          *) keep_reason=unverified ;;
+        esac
+      fi
     fi
   fi
-  if [ "$env_keep" = 1 ] && [ "$DRY" = 1 ]; then
-    say "  dry-run: would keep the different token already in $envf (use --force to replace)"
-  elif [ "$env_keep" = 1 ]; then
-    say "  [warn] $envf holds a different token that still works - kept; re-run with --force to replace it"
-  else
+  case "$keep_reason" in
+    dry) say "  dry-run: would keep the different token already in $envf (use --force to replace)" ;;
+    other) say "  [warn] $envf holds a token for a different server - kept; re-run with --force to replace it" ;;
+    works) say "  [warn] $envf holds a different token that still works - kept; re-run with --force to replace it" ;;
+    unverified) say "  [warn] could not verify the existing token in $envf (server unreachable or ambiguous answer) - kept; re-run with --force to replace it" ;;
+    *)
     CM_ENV_URL="$CM_URL" CM_ENV_TOK="$CM_TOKEN" CM_ENVF="$envf" CM_DRY="$DRY" python3 - <<'PY'
 import os, re
 f, dry = os.environ["CM_ENVF"], os.environ["CM_DRY"] == "1"
@@ -365,7 +399,8 @@ else:
     os.chmod(f, 0o600)
     print(f"  wrote {f} (mode 600, token {len(os.environ['CM_ENV_TOK'])} chars kept private)")
 PY
-  fi
+      ;;
+  esac
 
   local done_h=""
   for h in claude qwen codex pi opencode; do
