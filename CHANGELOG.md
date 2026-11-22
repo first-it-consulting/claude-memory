@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.4](https://github.com/first-it-consulting/claude-memory/compare/v0.2.3...v0.2.4) (2026-11-22)
+
+
+### Features
+
+* **api:** expose share_status/rejected_reason on memory rows (oi38) ([cf31a65](https://github.com/first-it-consulting/claude-memory/commit/cf31a65928c1a9e8ab49c8f97e3511992532662e))
+* **api:** share proposals - users propose, admin approves (oi38) ([f0969ca](https://github.com/first-it-consulting/claude-memory/commit/f0969caf6d98eabb811a3cfa96279ca390eafc86))
+
 ## [0.2.3](https://github.com/first-it-consulting/claude-memory/compare/v0.2.2...v0.2.3) (2026-11-22)
 
 
