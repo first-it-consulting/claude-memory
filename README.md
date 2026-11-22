@@ -353,6 +353,14 @@ memory is searchable; the MCP `add_memory` tool stores notes as written
 
 To tear down: `docker compose down` (add `-v` to also drop the database).
 
+## Deploy on Kubernetes
+
+Sanitized example manifests — server, UI, Ingress (incl. the oauth2-proxy
+bearer pass-through paths), nightly dedup CronJob, pgvector/`pg_trgm`
+requirements and a Flux `Kustomization` — live in
+[docs/kubernetes.md](docs/kubernetes.md). They are the production shape this
+project runs in itself, with hostnames and secrets genericized.
+
 ## Build & run
 
 ### Requirements
