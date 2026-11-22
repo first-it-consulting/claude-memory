@@ -337,6 +337,10 @@ memory is searchable; the MCP `add_memory` tool stores notes as written
    `setup` detects Claude Code, Qwen Code, Codex, pi and opencode, writes the
    hook env (0600), the hook/MCP config entries (backing up files it touches,
    once) and never prints the token; it is idempotent and supports `--dry-run`.
+   Behind a login proxy (oauth2-proxy in front of the web UI), point `--url`
+   at the public address: agents and these checks work as long as the proxy
+   lets `/mcp`, `/api/hooks` and `/api/sessions` through with bearer tokens
+   (the UI-only paths may stay login-gated).
    With an admin token it can create the user and store the issued token
    directly: `--admin-token <admin> --create-user alice`. Manual per-harness
    steps (and what the script writes) stay documented in
