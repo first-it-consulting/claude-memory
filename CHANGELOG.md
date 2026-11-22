@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/first-it-consulting/claude-memory/compare/v0.2.1...v0.2.2) (2026-11-22)
+
+
+### Features
+
+* **share:** admin move of a memory into the shared space (vd3y) ([b6eaab2](https://github.com/first-it-consulting/claude-memory/commit/b6eaab2093102cfb1cc8a729092695c6e92bdb93))
+
 ## [0.2.1](https://github.com/first-it-consulting/claude-memory/compare/v0.2.0...v0.2.1) (2026-11-22)
 
 
