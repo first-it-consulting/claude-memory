@@ -34,7 +34,9 @@ Local-first tools (e.g. [claude-mem](https://github.com/thedotmack/claude-mem)) 
 - **Session working memory**: `checkpoint` stores an agent's current working state (goal, decisions, dead ends, next steps) instantly, without the queue or LLM, so it survives context compaction. It's re-injected by the harness hooks.
 - **Harness hooks**: `/api/hooks/*` endpoints plus thin adapters for Claude Code, Qwen Code, Codex and Pi (see [`adapters/`](adapters/README.md)). They give each session a briefing at start, re-inject the checkpoint after compaction, and recall relevant memories per prompt.
   Set `BRIEFING_TOKEN_BUDGET` (e.g. `600`) to cap that start briefing to an estimated token budget (chars/4): it becomes a compact index - session instructions, checkpoint (truncated if oversized) and one short `id=`-bearing line per relevant memory, full text via `search_memory`. Default `0` keeps the classic full briefing.
-- **Semantic memory** — stores, embeds (via Ollama), searches and deduplicates memories using mem0 + pgvector.
+- **Semantic memory** — stores, embeds, searches and deduplicates memories using mem0 + pgvector.
+- **Pluggable model providers** — embeddings and the extraction LLM run on Ollama (default) or **any OpenAI-compatible endpoint** (LiteLLM, vLLM, TEI, Ollama's own `/v1`) via `EMBED_PROVIDER`/`LLM_PROVIDER`; a startup dimension guard refuses writes on a 768-dim mismatch. See [Quickstart](#use-litellm-or-another-openai-compatible-endpoint-instead-of-ollama).
+- **Setup & doctor script** — `scripts/setup.sh` configures every installed harness in one go (hook env 0600, hook/MCP config entries, token never printed, idempotent, `--dry-run`); `scripts/setup.sh doctor` verifies server reachability, token and hook/MCP config.
 - **Categorization & tagging** — classify memories (`project`, `feedback`, `reference`, `user`, `session`, `incident`) and tag them with free-form labels for filtering and metrics.
 - **REST API** — full CRUD over `/api/*` with bearer-token auth, plus JSON export/import.
 - **Multi-tenancy** — every user gets their own workspace (memories + session
@@ -93,13 +95,13 @@ Claude Code / MCP client            Browser UI (claude-memory-ui)
    └──────────────┘                            │
           ▼                                    ▼
    ┌─────────────────────────────────  queue_worker.py (background)
-   │  Ollama embeddings + LLM dedup (:11434)
+   │  embeddings + LLM: Ollama (:11434) or any OpenAI-compatible endpoint
    └───────────────────────────────────────────────┘
 ```
 
 Session checkpoints live in a plain `session_state` table (one row per session, upserted). They're not stored in mem0, because they have to be readable the moment they're written.
 
-**Data flow:** an `add_memory` call either writes synchronously through mem0 or, when Redis is configured, enqueues a job that the background worker (`queue_worker.py`) processes. mem0 persists embeddings in pgvector and embeds via Ollama; search ranks by embedding similarity.
+**Data flow:** an `add_memory` call either writes synchronously through mem0 or, when Redis is configured, enqueues a job that the background worker (`queue_worker.py`) processes. mem0 persists embeddings in pgvector and embeds via Ollama or the configured OpenAI-compatible endpoint; search ranks by embedding similarity.
 
 ---
 
@@ -292,9 +294,9 @@ Brings up postgres + server on `http://localhost:8080` using `compose.yaml`.
 working tree instead. Verified 2026-11-21 with Docker Compose v2 on macOS
 against the published image; the same steps run on Linux.
 
-**You need Ollama for real use.** Every write and search needs an embedding
-model, and storing memories with `infer=true` (the REST default) needs a chat
-model:
+**You need a model endpoint for real use.** Every write and search needs an
+embedding model, and storing memories with `infer=true` (the REST default)
+needs a chat model. Default is Ollama:
 
 ```bash
 ollama pull nomic-embed-text        # embeddings (always required)
@@ -308,6 +310,29 @@ context size". And REST adds are processed **asynchronously** (queued, then
 embedded + extracted): on a CPU-only Ollama expect up to a minute before a new
 memory is searchable; the MCP `add_memory` tool stores notes as written
 (`infer=false` default) and is ready immediately.
+
+### Use LiteLLM (or another OpenAI-compatible endpoint) instead of Ollama
+
+Each role (embeddings, extraction LLM) can switch to any OpenAI-compatible
+`/v1` endpoint - a LiteLLM gateway, vLLM, TEI, or Ollama's own `/v1` - with
+these variables (full table: [Configuration](#configuration)):
+
+```bash
+EMBED_PROVIDER=openai
+EMBED_BASE_URL=https://litellm.example.com/v1   # any /v1-compatible gateway
+EMBED_MODEL=nomic-embed-text                    # must produce 768-dim vectors
+EMBED_API_KEY=CHANGE_ME                         # or EMBED_API_KEY_FILE (mounted secret, wins)
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://litellm.example.com/v1
+LLM_MODEL=qwen2.5:7b                            # any chat model on the endpoint
+LLM_API_KEY=CHANGE_ME                           # or LLM_API_KEY_FILE
+```
+
+The pgvector column is fixed at 768 dimensions: with `EMBED_PROVIDER=openai`
+the server probe-embeds at startup and **refuses writes** (503, `/health`
+"degraded") if the model returns a different width. After switching, restart
+the stack and run `scripts/setup.sh doctor` to confirm the server still
+answers for agents (doctor checks server/token/MCP, not the provider).
 
 1. Configure:
 
