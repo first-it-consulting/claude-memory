@@ -41,7 +41,11 @@ jobs:
         python: ["3.13", "3.15"]   # 3.15 = the Dockerfile's runtime
     services:
       postgres:
-        image: postgres:16
+        # pgvector, not plain postgres: the share/proposal SQL tests create
+        # the real mem0 table (vector column) and otherwise SKIP silently -
+        # exactly what REQUIRE_DB exists to prevent, and it silently drained
+        # coverage below the floor in bean oi38.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: mem0
           POSTGRES_PASSWORD: mem0
