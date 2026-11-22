@@ -916,7 +916,21 @@ def propose_share(memory_id: str, actor: str) -> str:
             if payload.get("user_id") != actor:
                 return "not_found"
             if payload.get("share_status") == "proposed":
-                return "already"
+                # re-propose re-pins the stamp to the CURRENT content (the
+                # 409 remedy: owner edited after proposing, withdraw-free
+                # re-propose is what "ask them to re-propose" means). Same
+                # content stays idempotent.
+                if payload.get("proposed_stamp") == _content_stamp(payload):
+                    return "already"
+                payload["proposed_at"] = datetime.now(timezone.utc).isoformat(
+                    timespec="seconds"
+                )
+                payload["proposed_stamp"] = _content_stamp(payload)
+                cur.execute(
+                    "UPDATE mem0 SET payload = %s WHERE id = %s",
+                    (json.dumps(payload), memory_id),
+                )
+                return "proposed"
             if _count_open_proposals(cur, actor) >= MAX_OPEN_PROPOSALS:
                 return "limit"
             now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -1029,6 +1043,38 @@ def approve_proposal(memory_id: str, admin_id: str) -> str:
         return "moved"
     except Exception:
         return "error"
+    finally:
+        conn.close()
+
+
+def proposal_states(ids: list[str]) -> dict[str, tuple[str, str]]:
+    """share_status + rejected_reason for the given ids, straight from the
+    payload (bean oi38: mem0's own read paths only return their known fields,
+    so list/search rows get the proposal state merged from the row itself).
+    DB errors degrade to {} — the rows are still fine without a chip."""
+    wanted = [str(i) for i in ids if str(i).strip()]
+    uuids = [i for i in wanted if _is_uuid(i)]
+    if not uuids:
+        return {}
+    try:
+        conn = _db_conn()
+    except Exception:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id::text, payload->>'share_status',"
+                " coalesce(payload->>'rejected_reason', '')"
+                " FROM mem0 WHERE id::text = ANY(%s) AND payload ? 'share_status'",
+                (uuids,),
+            )
+            return {
+                rid: (st or "", rr or "")
+                for rid, st, rr in cur.fetchall()
+                if st and st != "none"
+            }
+    except Exception:
+        return {}
     finally:
         conn.close()
 

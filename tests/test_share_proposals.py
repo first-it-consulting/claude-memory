@@ -107,9 +107,33 @@ def test_propose_sets_state_and_provenance(server, users, mem):
     assert p["share_status"] == "proposed"
     assert p["proposed_by"] == "oi38-prop"
     assert p["proposed_at"] and p["proposed_stamp"]
-    # idempotent
+    # idempotent on unchanged content
     r2 = req(server, "POST", f"/api/memories/{mem}/propose-share", token=users["prop"])
     assert r2.json()["already_proposed"] is True
+
+
+def test_repropose_after_edit_repins_stamp(server, users, mem):
+    # the 409 remedy without a withdraw round-trip: the owner edits, then
+    # re-proposes -> the stamp re-pins to the new content and approve works
+    req(server, "POST", f"/api/memories/{mem}/propose-share", token=users["prop"])
+    p = _payload(mem)
+    p["data"] = "edited after proposing"
+    p["hash"] = "deadbeef"
+    conn = __import__("psycopg2").connect(DB_URL)
+    with conn:
+        conn.cursor().execute(
+            "UPDATE mem0 SET payload = %s WHERE id = %s", (json.dumps(p), mem)
+        )
+    assert (
+        req(
+            server, "POST", f"/api/share-proposals/{mem}/approve", token=users["adm"]
+        ).status_code
+        == 409
+    )
+    r = req(server, "POST", f"/api/memories/{mem}/propose-share", token=users["prop"])
+    assert r.json()["proposed"] is True  # re-pin, not 'already'
+    r2 = req(server, "POST", f"/api/share-proposals/{mem}/approve", token=users["adm"])
+    assert r2.status_code == 200 and r2.json()["shared"] is True
 
 
 def test_foreign_propose_is_404(server, users, mem):
@@ -329,6 +353,32 @@ def test_search_rows_carry_share_status(server, fake_mem, users, mem):
     ).json()
     hit = next(x for x in rows if x["id"] == mem)
     assert (hit["share_status"], hit["rejected_reason"]) == ("rejected", "not useful")
+
+
+def test_plain_list_enriches_proposal_state(server, fake_mem, users, mem):
+    # the plain list reads mem0 (faked, cannot know our payload columns) -
+    # the enrichment merges the state from the real row, so owner chips work
+    # on the default list view, not only on search rows
+    fake_mem.seed("plain list fact", user_id="oi38-prop", id=mem)
+
+    def plain():
+        rows = req(
+            server, "GET", f"/api/memories?ids={mem}", token=users["prop"]
+        ).json()
+        hit = next(x for x in rows if x["id"] == mem)
+        return (hit.get("share_status", ""), hit.get("rejected_reason", ""))
+
+    assert plain() == ("", "")
+    req(server, "POST", f"/api/memories/{mem}/propose-share", token=users["prop"])
+    assert plain() == ("proposed", "")
+    req(
+        server,
+        "POST",
+        f"/api/share-proposals/{mem}/reject",
+        token=users["adm"],
+        json={"reason": "not useful"},
+    )
+    assert plain() == ("rejected", "not useful")
 
 
 def test_shared_row_shares_no_proposal_state(server, users, mem):

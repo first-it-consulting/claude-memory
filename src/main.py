@@ -843,6 +843,20 @@ def _memory_dict(r: dict) -> dict:
     }
 
 
+def _attach_proposal_states(rows: list[dict]) -> list[dict]:
+    """Merge share_status/rejected_reason from the real payload into API rows
+    (bean oi38): mem0's own read paths (plain list, semantic search) return
+    only their known fields, so without this the owner's chips would never
+    light up there. One batched SQL query per request; keyword-shaped rows
+    simply get the same DB truth written over them."""
+    states = mem_store.proposal_states([r.get("id", "") for r in rows])
+    for r in rows:
+        st = states.get(r.get("id", ""))
+        if st:
+            r["share_status"], r["rejected_reason"] = st
+    return rows
+
+
 _ORIGIN_RE = re.compile(r"^\[origin:[^\]]*\]\s*")
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 _DESC_RE = re.compile(r"^description:\s*(.+)$", re.MULTILINE)
@@ -1800,7 +1814,10 @@ async def app(scope, receive, send):
                     principal.user_id,
                 )
                 await _send_response(
-                    send, *_json_response([_memory_dict(r) for r in recs])
+                    send,
+                    *_json_response(
+                        _attach_proposal_states([_memory_dict(r) for r in recs])
+                    ),
                 )
                 return
             q = qs.get("q", "").strip()
@@ -1838,7 +1855,10 @@ async def app(scope, receive, send):
                 )
                 return
             await _send_response(
-                send, *_json_response([_memory_dict(r) for r in results])
+                send,
+                *_json_response(
+                    _attach_proposal_states([_memory_dict(r) for r in results])
+                ),
             )
             return
 
