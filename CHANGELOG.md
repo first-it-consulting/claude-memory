@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/first-it-consulting/claude-memory/compare/v0.2.4...v0.2.5) (2026-11-22)
+
+
+### Bug Fixes
+
+* **api:** re-pin re-proposals; enrich list rows with proposal state (oi38) ([aab5e86](https://github.com/first-it-consulting/claude-memory/commit/aab5e8694a7f216485dee448a39917bd8924d102))
+
 ## [0.2.4](https://github.com/first-it-consulting/claude-memory/compare/v0.2.3...v0.2.4) (2026-11-22)
 
 
