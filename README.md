@@ -49,6 +49,25 @@ Local-first tools (e.g. [claude-mem](https://github.com/thedotmack/claude-mem)) 
 
 ---
 
+## Screenshots
+
+From a demo workspace (invented data). The browser UI is per-tenant: agents
+and users each see their own workspace, admins can switch workspaces.
+
+![Memories tab: invented project decisions and dead ends with category and tag chips, per-tenant workspace selector](docs/images/memories.png)
+
+*Memories - every entry carries category, tags and date; search, add, export.*
+
+![Stats tab: totals, memories by category and agent, top tags](docs/images/stats.png)
+
+*Stats - totals, by category, by agent, top tags.*
+
+![Sessions tab: two agent sessions with checkpoints, project and harness columns, goal line each](docs/images/sessions.png)
+
+*Sessions - working-memory checkpoints per agent session (survive context compaction).*
+
+---
+
 ## Architecture
 
 ```
