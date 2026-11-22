@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/first-it-consulting/claude-memory/compare/v0.2.2...v0.2.3) (2026-11-22)
+
+
+### Features
+
+* **api:** space filter (all/own/shared) on memories, stats, export ([18f34d7](https://github.com/first-it-consulting/claude-memory/commit/18f34d7f23f3908dda724812a65bc5dbd4d01581))
+
 ## [0.2.2](https://github.com/first-it-consulting/claude-memory/compare/v0.2.1...v0.2.2) (2026-11-22)
 
 
