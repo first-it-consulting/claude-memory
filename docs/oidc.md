@@ -41,5 +41,4 @@ OIDC_ADMIN_USERNAMES=alice,admin@example.com
 # OIDC_AUDIENCE=            # only if aud != client id
 ```
 
-No restart-free switching: agents keep using `cm_…` API tokens; the OIDC
-path only authenticates browser JWTs.
+Agents keep using `cm_…` API tokens; OIDC only authenticates browser JWTs.
