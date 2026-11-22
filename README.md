@@ -180,7 +180,8 @@ against the issuer's JWKS (signature, `iss`, `aud`, `exp`) — any OIDC
 provider with standard discovery works; the admin mapping reads
 Keycloak-style `realm_access`/`resource_access` claims (or
 `OIDC_ADMIN_USERNAMES`), so non-Keycloak issuers should use the username
-list. The first login provisions `users` by `preferred_username`, and realm
+list. The first login provisions `users` keyed by the token's `sub`
+(`preferred_username` is the display name), and realm
 role `claude-memory-admin` grants the admin role on every login. Setting up
 a **non-Keycloak OIDC provider**: see [docs/oidc.md](docs/oidc.md).
 
