@@ -192,6 +192,15 @@ every login.
   without storing.
 - Foreign-tenant memory ids and session ids behave exactly like missing ones
   (404) — no existence leak. Admin-only endpoints answer 403.
+- Proposal workflow (bean oi38): an owner marks their own memory with
+  `POST /api/memories/<id>/propose-share` (max 20 open per user) — it stays
+  in their workspace, invisible to others, until an admin reviews it on
+  `GET /api/share-proposals` (admin) and either approves
+  (`POST /api/share-proposals/<id>/approve` — performs the shared-space move
+  with approve audit; refuses 409 if the owner edited the content after
+  proposing) or rejects with an optional reason (the owner sees a `rejected`
+  marker and can re-propose). Owners can withdraw an open proposal via
+  `POST /api/memories/<id>/withdraw-share`.
 - Admins may add `?tenant=<id>` or `?scope=all` to memories/stats/export/
   sessions; `/api/jobs` and tag-rule writes are admin-only (job reports quote
   other tenants' session lines).
