@@ -331,6 +331,21 @@ def test_search_rows_carry_share_status(server, fake_mem, users, mem):
     assert (hit["share_status"], hit["rejected_reason"]) == ("rejected", "not useful")
 
 
+def test_shared_row_shares_no_proposal_state(server, users, mem):
+    # an approved row must not leak 'proposed'/'rejected' state anywhere:
+    # direct SQL (list path source) and the keyword search shape
+    req(server, "POST", f"/api/memories/{mem}/propose-share", token=users["prop"])
+    r = req(server, "POST", f"/api/share-proposals/{mem}/approve", token=users["adm"])
+    assert r.json()["shared"] is True
+    p = _payload(mem)
+    assert p["share_status"] == "none" and "rejected_reason" not in p
+    import memory as mem_store
+
+    hits = mem_store.keyword_hits("proposing", user_id="oi38-prop", limit=10)
+    hit = next(h for h in hits if str(h["id"]) == mem)
+    assert hit["share_status"] == "none" and not hit["rejected_reason"]
+
+
 def test_approve_unknown_and_malformed_id_never_500(server, users):
     _ensure_table()  # CI without pgvector has no mem0 table -> 503, skip
     r = req(
