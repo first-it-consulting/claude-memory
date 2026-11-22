@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6](https://github.com/first-it-consulting/claude-memory/compare/v0.2.5...v0.2.6) (2026-11-22)
+
+
+### Features
+
+* optional limit/offset paging on GET /api/memories (pj1k) ([967c309](https://github.com/first-it-consulting/claude-memory/commit/967c30979e2287eaf59fdcd8d0c89214b7b3c2da))
+
 ## [0.2.5](https://github.com/first-it-consulting/claude-memory/compare/v0.2.4...v0.2.5) (2026-11-22)
 
 
