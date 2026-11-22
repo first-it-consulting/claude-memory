@@ -183,7 +183,13 @@ every login.
 - Reads (list/search/hooks/MCP) see the caller's workspace **plus the shared
   space** (`SHARED_TENANT_ID`, default `global`).
 - Writes land in the caller's workspace. Admins publish into the shared space
-  with `POST /api/memories {"content": "...", "shared": true}`.
+  with `POST /api/memories {"content": "...", "shared": true}` — or share an
+  **existing** memory: `PATCH /api/memories/<id>/share` moves it into the
+  shared space keeping its id, recording `shared_by` / `shared_at` /
+  `original_tenant` on the row (idempotent; the original owner keeps seeing
+  it because the shared space is in every view). The MCP `add_memory` tool
+  accepts `shared=true` for admin tokens only — anything else is rejected
+  without storing.
 - Foreign-tenant memory ids and session ids behave exactly like missing ones
   (404) — no existence leak. Admin-only endpoints answer 403.
 - Admins may add `?tenant=<id>` or `?scope=all` to memories/stats/export/
