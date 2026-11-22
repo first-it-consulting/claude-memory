@@ -603,7 +603,12 @@ def timeline(
     }
 
 
-def keyword_hits(query: str, user_id: str | None = None, limit: int = 10) -> list[dict]:
+def keyword_hits(
+    query: str,
+    user_id: str | None = None,
+    limit: int = 10,
+    include_shared: bool = True,
+) -> list[dict]:
     """Exact-identifier keyword path (bean 4aqv): Postgres simple-FTS over
     mem0's text_lemmatized GIN index plus an ILIKE substring match (pg_trgm
     when available). Returns rows shaped like mem0 search results."""
@@ -612,7 +617,7 @@ def keyword_hits(query: str, user_id: str | None = None, limit: int = 10) -> lis
         return []
     tenant = _tenant(user_id)
     tenants = [tenant]
-    if tenant != settings.shared_tenant_id:
+    if include_shared and tenant != settings.shared_tenant_id:
         tenants.append(settings.shared_tenant_id)
     conn = _db_conn()
     try:
@@ -683,10 +688,17 @@ def _rrf_merge(sem: list[dict], kw: list[dict], limit: int) -> list[dict]:
     return out[:limit]
 
 
-def search_hybrid(query: str, limit: int = 5, user_id: str | None = None) -> list[dict]:
+def search_hybrid(
+    query: str,
+    limit: int = 5,
+    user_id: str | None = None,
+    include_shared: bool = True,
+) -> list[dict]:
     """Semantic + keyword (exact identifiers) merged with RRF."""
-    sem = search(query, limit=limit * 2, user_id=user_id)
-    kw = keyword_hits(query, user_id=user_id, limit=limit * 2)
+    sem = search(query, limit=limit * 2, user_id=user_id, include_shared=include_shared)
+    kw = keyword_hits(
+        query, user_id=user_id, limit=limit * 2, include_shared=include_shared
+    )
     return _rrf_merge(sem, kw, limit)
 
 
