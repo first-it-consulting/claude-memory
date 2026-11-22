@@ -7,7 +7,9 @@
 # Detects installed harnesses (Claude Code, Qwen Code, Codex, pi, opencode),
 # writes the shared hook env + per-harness MCP/hook config with a per-user
 # token, and verifies connectivity. Idempotent: re-running changes nothing.
-# --dry-run prints every planned action and writes nothing.
+# --dry-run prints every planned action and writes nothing. --force overrides
+# the per-harness-token guards: replaces an existing MCP token and rewrites
+# the env token even when the file already holds a different (working) one.
 #
 # The token is never echoed and never put on another command's argv; the only
 # places it lands are ~/.config/agent-memory/env (chmod 600) and the harness
@@ -26,6 +28,7 @@ USER_NAME=""
 TOKEN_NAME="setup"
 ONLY=""
 DRY=0
+FORCE=0
 
 say() { printf '%s\n' "$*"; }
 run() { # run <description> <command...> - honours --dry-run
@@ -43,7 +46,8 @@ while [ $# -gt 0 ]; do
     --token-name) TOKEN_NAME="$2"; shift 2 ;;
     --harness) ONLY="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --force) FORCE=1; shift ;;
+    -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) say "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -86,11 +90,12 @@ http_get_status() { # -> "<code> <body>" ('000' = transport error)
   printf '%s %s' "${out##*$'\n'}" "${out%$'\n'*}"
 }
 
-install_file() { # like install -D but BSD-safe
-  local src="$1" dst="$2"
-  if [ "$DRY" = 1 ]; then say "dry-run: install $dst"; return; fi
+install_file() { # like install -D but BSD-safe; 'updated' when content differs
+  local src="$1" dst="$2" verb=install
+  [ -f "$dst" ] && verb=updated
+  if [ "$DRY" = 1 ]; then say "dry-run: $verb $dst"; return; fi
   if [ -f "$dst" ] && cmp -s "$src" "$dst"; then say "  up to date: $dst"; return; fi
-  say "  install $dst"
+  say "  $verb $dst"
   mkdir -p "$(dirname "$dst")"
   install -m 644 "$src" "$dst"
 }
@@ -243,32 +248,55 @@ PY
 }
 
 merge_mcp_json() { # mcpServers entry: claude.json (claude) or opencode.json (opencode)
+  # An existing entry with a DIFFERENT token is kept unless --force (bean
+  # 3mup: per-harness setups must not clobber each other's tokens silently).
+  # Messages never print token material - only 'added'/'replaced'/'kept'.
   local dst="$1" harness="$2"
-  CM_DST="$dst" CM_H="$harness" CM_URL_M="$CM_URL" CM_TOK="$CM_TOKEN" CM_DRY="$DRY" python3 - <<'PY'
+  CM_DST="$dst" CM_H="$harness" CM_URL_M="$CM_URL" CM_TOK="$CM_TOKEN" CM_DRY="$DRY" CM_FORCE="$FORCE" python3 - <<'PY'
 import json, os
 dst, h = os.environ["CM_DST"], os.environ["CM_H"]
 url, tok, dry = os.environ["CM_URL_M"], os.environ["CM_TOK"], os.environ["CM_DRY"] == "1"
+force = os.environ["CM_FORCE"] == "1"
 cur = json.load(open(dst)) if os.path.exists(dst) else {}
+key = "mcpServers" if h == "claude" else "mcp"
 if h == "claude":
     entry = {"type": "http", "url": url + "/mcp",
              "headers": {"Authorization": f"Bearer {tok}"}}
-    servers = cur.setdefault("mcpServers", {})
-    changed = servers.get("claude-memory") != entry
-    servers["claude-memory"] = entry
 else:  # opencode: remote MCP with headers
     entry = {"type": "remote", "url": url + "/mcp", "enabled": True,
              "headers": {"Authorization": f"Bearer {tok}"}}
-    servers = cur.setdefault("mcp", {})
-    changed = servers.get("claude-memory") != entry
+servers = cur.setdefault(key, {})
+old = servers.get("claude-memory")
+if old is None:
+    action, msg = "add", "MCP server added -> " + dst
+elif old == entry:
+    action, msg = "none", "MCP server already configured in " + dst
+elif old.get("url") != entry["url"]:
+    # different server URL: a real config change, not a token swap
+    action, msg = "replace", "MCP server replaced (URL changed) -> " + dst
+else:
+    # same URL, different token (or headers differ): guard it
+    if not force:
+        action = "keep"
+        msg = ("[warn] MCP entry in " + dst + " holds a different token - kept;"
+               " re-run with --force to replace it")
+    else:
+        action, msg = "replace", "MCP token replaced in " + dst
+if dry:
+    print("  dry-run: would " + {"add": "add MCP server", "none": "leave MCP server unchanged",
+          "replace": "replace MCP server entry", "keep": "keep existing MCP token (use --force to replace)"}[action]
+          + (" in " + dst if action != "add" else " -> " + dst))
+elif action in ("add", "replace"):
     servers["claude-memory"] = entry
-if changed and not dry:
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
     if os.path.exists(dst) and not os.path.exists(dst + ".agent-memory.bak"):
         import shutil; shutil.copy2(dst, dst + ".agent-memory.bak")
     tmp = dst + ".tmp"
     json.dump(cur, open(tmp, "w"), indent=2)
     os.replace(tmp, dst)
-print("  " + ("MCP server added -> " + dst if changed else "MCP server already configured in " + dst))
+    print("  " + msg)
+else:
+    print("  " + msg)
 PY
 }
 
@@ -296,8 +324,23 @@ setup() {
 
   # shared hook payload + env file (all harnesses read this)
   install_file "$REPO_DIR/adapters/hooks/memory_hook.py" "$HOME/.config/agent-memory/memory_hook.py"
-  local envf="$HOME/.config/agent-memory/env"
-  CM_ENV_URL="$CM_URL" CM_ENV_TOK="$CM_TOKEN" CM_ENVF="$envf" CM_DRY="$DRY" python3 - <<'PY'
+  local envf="$HOME/.config/agent-memory/env" env_tok="" env_keep=0
+  # Bean 3mup: per-harness runs pass different tokens. Never clobber an env
+  # that already holds a WORKING different token unless --force; a stale
+  # (rejected) env token is replaced as before.
+  if [ -f "$envf" ]; then
+    env_tok=$(grep '^AGENT_MEMORY_TOKEN=' "$envf" | tail -1 | cut -d= -f2- || true)
+    if [ -n "$env_tok" ] && [ "$env_tok" != "$CM_TOKEN" ] && [ "$FORCE" != 1 ]; then
+      if [ "$DRY" = 1 ]; then env_keep=1
+      elif CM_TOKEN="$env_tok" api_whoami | grep -qE '"user_id"|"result"'; then env_keep=1; fi
+    fi
+  fi
+  if [ "$env_keep" = 1 ] && [ "$DRY" = 1 ]; then
+    say "  dry-run: would keep the different token already in $envf (use --force to replace)"
+  elif [ "$env_keep" = 1 ]; then
+    say "  [warn] $envf holds a different token that still works - kept; re-run with --force to replace it"
+  else
+    CM_ENV_URL="$CM_URL" CM_ENV_TOK="$CM_TOKEN" CM_ENVF="$envf" CM_DRY="$DRY" python3 - <<'PY'
 import os, re
 f, dry = os.environ["CM_ENVF"], os.environ["CM_DRY"] == "1"
 lines = open(f).read().splitlines() if os.path.exists(f) else []
@@ -322,6 +365,7 @@ else:
     os.chmod(f, 0o600)
     print(f"  wrote {f} (mode 600, token {len(os.environ['CM_ENV_TOK'])} chars kept private)")
 PY
+  fi
 
   local done_h=""
   for h in claude qwen codex pi opencode; do
