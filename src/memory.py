@@ -769,6 +769,14 @@ def delete(memory_id: str) -> dict:
     return m.delete(memory_id)
 
 
+def _is_uuid(memory_id: str) -> bool:
+    try:
+        uuid.UUID(str(memory_id))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 def share_to_space(memory_id: str, actor: str) -> str:
     """Move one memory into the shared space, keeping its id (bean vd3y).
 
@@ -783,9 +791,7 @@ def share_to_space(memory_id: str, actor: str) -> str:
     A malformed id (not a UUID) returns 'not_found' without touching the
     DB: the mem0 vector table has a UUID column and Postgres would raise.
     """
-    try:
-        uuid.UUID(str(memory_id))
-    except (ValueError, AttributeError, TypeError):
+    if not _is_uuid(memory_id):
         return "not_found"
     try:
         conn = _db_conn()
@@ -819,6 +825,247 @@ def share_to_space(memory_id: str, actor: str) -> str:
         return "error"
     finally:
         conn.close()
+
+
+PROPOSAL_STATUSES = ("proposed", "rejected", "all")
+MAX_OPEN_PROPOSALS = 20  # per user, bean oi38
+
+
+def _content_stamp(payload: dict) -> str:
+    """Cheap identity of the content at a point in time: mem0's content hash
+    when present, else updated/created timestamp (bean oi38: an approve must
+    refuse content edited after the proposal, never silently approve new text)."""
+    return str(
+        payload.get("hash")
+        or payload.get("updated_at")
+        or payload.get("created_at")
+        or ""
+    )
+
+
+def _proposal_update(memory_id: str, checks, build) -> str:
+    """Shared skeleton for propose/withdraw/reject: read the row, let
+    `checks(payload)` veto, then apply `build(payload, now)` in the same
+    transaction. Returns the check's veto string or the build's result."""
+    if not _is_uuid(memory_id):
+        return "not_found"
+    try:
+        conn = _db_conn()
+    except Exception:
+        return "error"
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT payload FROM mem0 WHERE id = %s FOR UPDATE", (memory_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return "not_found"
+            payload = dict(row[0] or {})
+            veto = checks(payload)
+            if veto:
+                return veto
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            result = build(payload, now)
+            cur.execute(
+                "UPDATE mem0 SET payload = %s WHERE id = %s",
+                (json.dumps(payload), memory_id),
+            )
+        return result
+    except Exception:
+        return "error"
+    finally:
+        conn.close()
+
+
+def _count_open_proposals(cur, actor: str) -> int:
+    cur.execute(
+        "SELECT count(*) FROM mem0 WHERE payload->>'user_id' = %s"
+        " AND payload->>'share_status' = 'proposed'",
+        (actor,),
+    )
+    return int(cur.fetchone()[0])
+
+
+def propose_share(memory_id: str, actor: str) -> str:
+    """Owner marks their own memory as a proposal for the shared space
+    (bean oi38). Stays in their tenant, invisible to others until an admin
+    approves; the content stamp pins what was proposed.
+    Returns: 'proposed' | 'already' | 'limit' | 'not_found' | 'error'."""
+    # owner check, idempotency and the rate limit run inside one tx with a
+    # row lock, so concurrent proposals cannot slip past MAX_OPEN_PROPOSALS
+    if not _is_uuid(memory_id):
+        return "not_found"  # malformed id: identical to missing, no DB touch
+    try:
+        conn = _db_conn()
+    except Exception:
+        return "error"
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT payload FROM mem0 WHERE id = %s FOR UPDATE", (memory_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return "not_found"
+            payload = dict(row[0] or {})
+            if payload.get("user_id") != actor:
+                return "not_found"
+            if payload.get("share_status") == "proposed":
+                return "already"
+            if _count_open_proposals(cur, actor) >= MAX_OPEN_PROPOSALS:
+                return "limit"
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            payload["share_status"] = "proposed"
+            payload["proposed_by"] = actor
+            payload["proposed_at"] = now
+            payload["proposed_stamp"] = _content_stamp(payload)
+            for k in ("rejected_by", "rejected_at", "rejected_reason"):
+                payload.pop(k, None)
+            cur.execute(
+                "UPDATE mem0 SET payload = %s WHERE id = %s",
+                (json.dumps(payload), memory_id),
+            )
+        return "proposed"
+    except Exception:
+        return "error"
+    finally:
+        conn.close()
+
+
+def withdraw_share(memory_id: str, actor: str) -> str:
+    """Owner pulls an open proposal back (bean oi38).
+    Returns: 'withdrawn' | 'not_proposed' | 'not_found' | 'error'."""
+
+    def checks(payload: dict) -> str | None:
+        if payload.get("user_id") != actor:
+            return "not_found"
+        if payload.get("share_status") != "proposed":
+            return "not_proposed"
+        return None
+
+    def build(payload: dict, now: str) -> str:
+        payload["share_status"] = "none"
+        for k in ("proposed_by", "proposed_at", "proposed_stamp"):
+            payload.pop(k, None)
+        return "withdrawn"
+
+    return _proposal_update(memory_id, checks, build)
+
+
+def reject_proposal(memory_id: str, admin_id: str, reason: str = "") -> str:
+    """Admin declines an open proposal; the memory stays untouched in its
+    owner's workspace, the owner sees the reason (bean oi38).
+    Returns: 'rejected' | 'not_proposed' | 'not_found' | 'error'."""
+
+    def checks(payload: dict) -> str | None:
+        if payload.get("share_status") != "proposed":
+            return "not_proposed"
+        return None
+
+    def build(payload: dict, now: str) -> str:
+        payload["share_status"] = "rejected"
+        payload["rejected_by"] = admin_id
+        payload["rejected_at"] = now
+        if reason:
+            payload["rejected_reason"] = reason[:300]
+        return "rejected"
+
+    return _proposal_update(memory_id, checks, build)
+
+
+def approve_proposal(memory_id: str, admin_id: str) -> str:
+    """Admin approves an open proposal: the row moves to the shared space
+    exactly like the admin's direct share (share_to_space), with the approve
+    audit trail. Refuses (409 path) when the owner edited the content after
+    proposing — the admin sees 'changed since proposal' instead of a silent
+    approval of different text (lead's rule).
+    Returns: 'moved' | 'already' | 'not_proposed' | 'changed' | 'not_found'
+    | 'error'."""
+    if not _is_uuid(memory_id):
+        return "not_found"  # malformed id: identical to missing, no DB touch
+    try:
+        conn = _db_conn()
+    except Exception:
+        return "error"
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT payload FROM mem0 WHERE id = %s FOR UPDATE", (memory_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return "not_found"
+            payload = dict(row[0] or {})
+            if payload.get("user_id") == settings.shared_tenant_id:
+                return "already"
+            if payload.get("share_status") != "proposed":
+                return "not_proposed"
+            stamp = str(payload.get("proposed_stamp") or "")
+            if stamp and _content_stamp(payload) != stamp:
+                return "changed"
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            prov = {
+                "shared_by": admin_id,
+                "shared_at": now,
+                "original_tenant": payload.get("user_id") or "",
+                "approved_by": admin_id,
+                "approved_at": now,
+                "share_status": "none",
+            }
+            payload.update(prov)
+            payload["user_id"] = settings.shared_tenant_id
+            meta = payload.get("metadata")
+            if isinstance(meta, dict):
+                meta.update({k: payload[k] for k in prov})
+            cur.execute(
+                "UPDATE mem0 SET payload = %s WHERE id = %s",
+                (json.dumps(payload), memory_id),
+            )
+        return "moved"
+    except Exception:
+        return "error"
+    finally:
+        conn.close()
+
+
+def list_proposals(status: str = "proposed") -> list[dict]:
+    """Admin worklist (bean oi38): proposals by status, newest first."""
+    conn = _db_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if status == "all":
+                cur.execute(
+                    "SELECT id, payload FROM mem0 WHERE payload ? 'share_status'"
+                    " AND payload->>'share_status' IN ('proposed','rejected')"
+                )
+            else:
+                cur.execute(
+                    "SELECT id, payload FROM mem0 WHERE payload->>'share_status' = %s",
+                    (status,),
+                )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        p = r["payload"] or {}
+        out.append(
+            {
+                "id": str(r["id"]),
+                "memory": p.get("data", ""),
+                "tenant": p.get("user_id", ""),
+                "share_status": p.get("share_status", ""),
+                "proposed_by": p.get("proposed_by", ""),
+                "proposed_at": p.get("proposed_at", ""),
+                "updated_at": p.get("updated_at", ""),
+                "rejected_by": p.get("rejected_by", ""),
+                "rejected_at": p.get("rejected_at", ""),
+                "rejected_reason": p.get("rejected_reason", ""),
+            }
+        )
+    out.sort(key=lambda d: d["proposed_at"], reverse=True)
+    return out
 
 
 def update_tags(

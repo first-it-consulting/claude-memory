@@ -1903,6 +1903,123 @@ async def app(scope, receive, send):
 
         # Routes with memory ID suffix — all ownership-checked: another
         # tenant's ids behave exactly like missing ones (404).
+        # /api/share-proposals — admin worklist for user proposals (bean
+        # oi38). Non-admins get 403 before anything is read.
+        if path == "/api/share-proposals" or path.startswith("/api/share-proposals/"):
+            if not principal.is_admin:
+                await _forbidden(send)
+                return
+            if path == "/api/share-proposals" and method == "GET":
+                status = (qs.get("status", "proposed") or "proposed").strip().lower()
+                if status not in mem_store.PROPOSAL_STATUSES:
+                    await _send_response(
+                        send,
+                        *_json_response(
+                            {
+                                "ok": False,
+                                "error": "status must be one of: proposed, rejected, all",
+                            },
+                            status=400,
+                        ),
+                    )
+                    return
+                rows = await _to_thread(mem_store.list_proposals, status)
+                await _send_response(send, *_json_response(rows))
+                return
+            sub = path[len("/api/share-proposals/") :]
+            pid, _, action = sub.partition("/")
+            if method == "POST" and action == "approve":
+                res = await run_write(
+                    mem_store.approve_proposal, pid, principal.user_id
+                )
+                if res == "not_found":
+                    await _send_response(
+                        send, 404, [[b"content-type", b"text/plain"]], b"Not Found"
+                    )
+                    return
+                if res == "changed":
+                    await _send_response(
+                        send,
+                        *_json_response(
+                            {
+                                "ok": False,
+                                "error": "content changed since proposal - ask the owner to re-propose",
+                            },
+                            status=409,
+                        ),
+                    )
+                    return
+                if res == "not_proposed":
+                    await _send_response(
+                        send,
+                        *_json_response(
+                            {"ok": False, "error": "no open proposal on this memory"},
+                            status=409,
+                        ),
+                    )
+                    return
+                if res == "error":
+                    await _send_response(
+                        send,
+                        *_json_response(
+                            {"ok": False, "error": "store unreachable"}, status=503
+                        ),
+                    )
+                    return
+                await _send_response(
+                    send,
+                    *_json_response(
+                        {
+                            "ok": True,
+                            "shared": res == "moved",
+                            "already_shared": res == "already",
+                        }
+                    ),
+                )
+                return
+            if method == "POST" and action == "reject":
+                try:
+                    body = json.loads(await _read_body(receive) or b"{}")
+                    reason = str(body.get("reason", ""))[:300]
+                except Exception:
+                    await _send_response(
+                        send, 400, [[b"content-type", b"text/plain"]], b"Bad Request"
+                    )
+                    return
+                res = await run_write(
+                    mem_store.reject_proposal, pid, principal.user_id, reason
+                )
+                if res == "not_found":
+                    await _send_response(
+                        send, 404, [[b"content-type", b"text/plain"]], b"Not Found"
+                    )
+                    return
+                if res == "not_proposed":
+                    await _send_response(
+                        send,
+                        *_json_response(
+                            {"ok": False, "error": "no open proposal on this memory"},
+                            status=409,
+                        ),
+                    )
+                    return
+                if res == "error":
+                    await _send_response(
+                        send,
+                        *_json_response(
+                            {"ok": False, "error": "store unreachable"}, status=503
+                        ),
+                    )
+                    return
+                await _send_response(
+                    send, *_json_response({"ok": True, "rejected": True})
+                )
+                return
+            await _send_response(
+                send, 404, [[b"content-type", b"text/plain"]], b"Not Found"
+            )
+            return
+
         if path.startswith("/api/memories/"):
             memory_id = path[len("/api/memories/") :]
 
@@ -1933,6 +2050,88 @@ async def app(scope, receive, send):
                 if content:
                     await run_write(mem_store.update, memory_id, content)
                 await _send_response(send, *_json_response({"ok": True}))
+                return
+
+            # POST /api/memories/{id}/propose-share — owner marks their own
+            # memory as a proposal for the shared space (bean oi38). It
+            # stays in their tenant and invisible to others until an admin
+            # approves; foreign ids behave exactly like missing ones.
+            if method == "POST" and memory_id.endswith("/propose-share"):
+                res = await run_write(
+                    mem_store.propose_share,
+                    memory_id[: -len("/propose-share")],
+                    principal.user_id,
+                )
+                if res == "not_found":
+                    await _send_response(
+                        send, 404, [[b"content-type", b"text/plain"]], b"Not Found"
+                    )
+                    return
+                if res == "limit":
+                    await _send_response(
+                        send,
+                        *_json_response(
+                            {
+                                "ok": False,
+                                "error": f"too many open proposals (max {mem_store.MAX_OPEN_PROPOSALS})",
+                            },
+                            status=429,
+                        ),
+                    )
+                    return
+                if res == "error":
+                    await _send_response(
+                        send,
+                        *_json_response(
+                            {"ok": False, "error": "store unreachable"}, status=503
+                        ),
+                    )
+                    return
+                await _send_response(
+                    send,
+                    *_json_response(
+                        {
+                            "ok": True,
+                            "proposed": res == "proposed",
+                            "already_proposed": res == "already",
+                        }
+                    ),
+                )
+                return
+
+            # POST /api/memories/{id}/withdraw-share — owner pulls an open
+            # proposal back (bean oi38).
+            if method == "POST" and memory_id.endswith("/withdraw-share"):
+                res = await run_write(
+                    mem_store.withdraw_share,
+                    memory_id[: -len("/withdraw-share")],
+                    principal.user_id,
+                )
+                if res == "not_found":
+                    await _send_response(
+                        send, 404, [[b"content-type", b"text/plain"]], b"Not Found"
+                    )
+                    return
+                if res == "not_proposed":
+                    await _send_response(
+                        send,
+                        *_json_response(
+                            {"ok": False, "error": "no open proposal on this memory"},
+                            status=409,
+                        ),
+                    )
+                    return
+                if res == "error":
+                    await _send_response(
+                        send,
+                        *_json_response(
+                            {"ok": False, "error": "store unreachable"}, status=503
+                        ),
+                    )
+                    return
+                await _send_response(
+                    send, *_json_response({"ok": True, "withdrawn": True})
+                )
                 return
 
             # PATCH /api/memories/{id}/share — admin-only MOVE into the
