@@ -836,6 +836,10 @@ def _memory_dict(r: dict) -> dict:
         "created_at": r.get("created_at", ""),
         "updated_at": r.get("updated_at", ""),
         "score": r.get("score"),
+        # proposal state for the UI chips (bean oi38): only meaningful for
+        # the owner's own list; empty for every ordinary memory
+        "share_status": r.get("share_status") or "",
+        "rejected_reason": r.get("rejected_reason") or "",
     }
 
 
