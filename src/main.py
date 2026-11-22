@@ -1854,12 +1854,34 @@ async def app(scope, receive, send):
                     send, *_json_response([_index_row(r) for r in results])
                 )
                 return
-            await _send_response(
-                send,
-                *_json_response(
-                    _attach_proposal_states([_memory_dict(r) for r in results])
-                ),
-            )
+            rows = _attach_proposal_states([_memory_dict(r) for r in results])
+            # Optional paging (bean pj1k): ADDITIVE — without limit/offset the
+            # response is byte-identical to before (plain JSON array), so MCP
+            # and existing REST clients are unaffected.
+            limit_raw = qs.get("limit", "").strip()
+            offset_raw = qs.get("offset", "").strip()
+            if limit_raw or offset_raw:
+                limit = _int(limit_raw, 0)
+                offset = _int(offset_raw, 0)
+                if limit < 0 or offset < 0:
+                    await _send_response(
+                        send,
+                        *_json_response(
+                            {"ok": False, "error": "limit and offset must be >= 0"},
+                            status=400,
+                        ),
+                    )
+                    return
+                total = len(rows)
+                if limit > 0:
+                    rows = rows[offset : offset + limit]
+                else:  # limit=0 (or absent with offset): all from offset
+                    rows = rows[offset:]
+                await _send_response(
+                    send, *_json_response({"memories": rows, "total": total})
+                )
+                return
+            await _send_response(send, *_json_response(rows))
             return
 
         # GET /api/memories/timeline/{id}?window=3 — chronological neighbours

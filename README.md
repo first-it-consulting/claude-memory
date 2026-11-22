@@ -256,7 +256,7 @@ without shared", and an invalid `space` value answers 400.
 | POST | `/api/users` *(admin)* | Create a tenant (`{"id", "name", "role"}`) — returns its API token **once** |
 | GET/PATCH/DELETE | `/api/users/{id}` *(admin)* | Read / change (name, role, disabled) / remove a tenant |
 | POST | `/api/users/{id}/rotate-token` *(admin)* | New API token (shown once, old one dies) |
-| GET | `/api/memories` | List or search memories (`?q=&sort=newest|oldest|relevance&category=&agent_id=&tag=`); `?format=index` → compact rows (`id`, `snippet`, `score`, `est_tokens_full`); `?ids=a,b` → visible records by id *(admin scope)* |
+| GET | `/api/memories` | List or search memories (`?q=&sort=newest|oldest|relevance&category=&agent_id=&tag=`); `?format=index` → compact rows (`id`, `snippet`, `score`, `est_tokens_full`); `?ids=a,b` → visible records by id *(admin scope)*; optional `?limit=&offset=` → `{"memories": [...], "total": N}` paging (`total` = full filtered set; without these params the response stays the plain array) |
 | GET | `/api/memories/timeline/{id}` | Chronological neighbours (`?window=3`, own workspace + shared space) |
 | (any search) | `?hybrid=1` | additionally run the exact keyword path (FTS + `pg_trgm` ILIKE) and fuse rankings (RRF) |
 | POST | `/api/memories` | Add a memory (`{"content": "...", "agent_id": "..."}`, admin: `"shared": true` → shared space) — queued if Redis is enabled |
